@@ -1,0 +1,33 @@
+{
+    "data_source": {
+        "type": "telegram",
+        "api_key": "YOUR_TELEGRAM_BOT_API_KEY",
+        "channel_id": "YOUR_CHANNEL_ID",
+        "processed_messages_file": "data/processed_messages.txt",
+        "polling_interval": 60,
+        "mock_mode": false,
+        "category_channels": {
+            "AI": "YOUR_AI_CHANNEL_ID",
+            "Python": "YOUR_PYTHON_CHANNEL_ID",
+            "电子设计": "YOUR_ELECTRONICS_CHANNEL_ID",
+            "数字货币": "YOUR_CRYPTO_CHANNEL_ID",
+            "其他": "YOUR_OTHER_CHANNEL_ID"
+        }
+    },
+    "analyzer": {
+        "type": "gpt",
+        "api_key": "YOUR_GPT_API_KEY",
+        "model": "gpt-4",
+        "categories": ["AI", "Python", "电子设计", "数字货币", "其他"],
+        "max_tokens": 150,
+        "temperature": 0.2
+    },
+    "storage": {
+        "type": "local",
+        "db_path": "data/xcat.db"
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "logs/xcat.log"
+    }
+} 

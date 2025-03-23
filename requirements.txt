@@ -1,0 +1,25 @@
+# Core dependencies
+python-telegram-bot==20.7
+loguru==0.7.2
+python-dotenv>=1.0.0
+
+# Proxy support
+pysocks>=1.7.1  # 支持SOCKS代理
+urllib3>=1.26.0  # 确保支持HTTPS代理
+requests[socks]>=2.27.0  # 提供完整的代理支持
+
+# AI API wrapper
+ai-api-wrapper>=0.1.0
+
+# Testing
+pytest>=7.3.1
+pytest-cov>=4.1.0
+
+# Development
+black>=23.3.0
+isort>=5.12.0
+
+# Added from the code block
+httpx==0.26.0
+asyncio==3.4.3
+openai==1.12.0 
