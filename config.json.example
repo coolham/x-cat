@@ -11,19 +11,19 @@
     "channel_id": "YOUR_CHANNEL_ID",
     "proxy_url": "http://127.0.0.1:7890",
     "polling_interval": 60,
-    "processed_messages_file": "data/processed_messages.txt"
+    "processed_messages_file": "data/processed_messages.json"
   },
-  "gpt_analyzer": {
-    "api_key": "YOUR_OPENAI_API_KEY",
-    "model": "gpt-4",
+  "content_analyzer": {
+    "api_key": "YOUR_API_KEY",
+    "provider": "openrouter",
+    "model": "anthropic/claude-3-opus-20240229",
     "proxy_url": "http://127.0.0.1:7890",
-    "max_tokens": 1000,
+    "max_tokens": 2000,
     "temperature": 0.3,
-    "cache_dir": "data/gpt_cache",
-    "categories": ["AI", "Python", "电子设计", "数字货币", "其他"],
-    "prompt_template": "对以下X帖子进行分类，并生成一句话摘要：\n\n{text}\n\n分类应为以下类别之一：{categories}。",
-    "backup_provider": "anthropic",
-    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY"
+    "max_content_length": 8000,
+    "max_total_length": 15000,
+    "max_urls": 5,
+    "format_type": "markdown"
   },
   "discord_adapter": {
     "enabled": false,

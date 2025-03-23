@@ -305,8 +305,37 @@ class StorageModule(Module):
                 
             return False
     
+    async def has_analysis(self, message_id: str) -> bool:
+        """
+        检查消息是否已经分析
+        
+        Args:
+            message_id: 消息ID
+            
+        Returns:
+            True如果消息已分析，否则False
+        """
+        try:
+            if not self.connection:
+                logger.warning("数据库连接不可用，无法检查分析状态")
+                return False
+                
+            cursor = self.connection.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM analysis WHERE message_id = ?",
+                (message_id,)
+            )
+            result = cursor.fetchone()
+            
+            # 如果结果大于0，则表示已存在分析
+            return result and result[0] > 0
+            
+        except Exception as e:
+            logger.error(f"检查消息分析状态出错: {str(e)}")
+            return False
+    
     def _create_tables(self) -> None:
-        """创建必要的数据库表和索引"""
+        """创建必要的数据库表和索引，并确保已有表包含所需列"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -348,6 +377,32 @@ class StorageModule(Module):
                 FOREIGN KEY (message_id) REFERENCES messages (message_id)
             )
             """)
+            
+            # 检查analysis表是否包含content_type列，如果没有则添加
+            cursor.execute("PRAGMA table_info(analysis)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if "content_type" not in columns:
+                logger.warning("analysis表中缺少content_type列，添加该列")
+                cursor.execute("ALTER TABLE analysis ADD COLUMN content_type TEXT")
+            
+            # 检查其他重要列是否存在，如果不存在则添加
+            required_columns = [
+                ("category", "TEXT"),
+                ("subcategory", "TEXT"),
+                ("sentiment", "TEXT"),
+                ("language", "TEXT"),
+                ("summary", "TEXT"),
+                ("keywords", "TEXT"),
+                ("urls", "TEXT"),
+                ("content_format", "TEXT"),
+                ("has_web_content", "INTEGER DEFAULT 0")
+            ]
+            
+            for column_name, column_type in required_columns:
+                if column_name not in columns:
+                    logger.warning(f"analysis表中缺少{column_name}列，添加该列")
+                    cursor.execute(f"ALTER TABLE analysis ADD COLUMN {column_name} {column_type}")
             
             # 创建索引
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages (message_id)")

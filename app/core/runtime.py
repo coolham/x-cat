@@ -81,9 +81,21 @@ class Runtime:
         logger.info(f"Unregistered module: {module.name} (ID: {module_id})")
         return True
     
+    def has_module(self, module_id: str) -> bool:
+        """
+        检查是否存在指定ID的模块
+        
+        Args:
+            module_id: 模块ID
+            
+        Returns:
+            是否存在
+        """
+        return module_id in self.modules
+    
     def get_module(self, module_id: str) -> Optional[Module]:
         """
-        获取模块实例
+        获取指定ID的模块
         
         Args:
             module_id: 模块ID

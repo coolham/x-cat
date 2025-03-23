@@ -1,79 +1,89 @@
 #!/usr/bin/env python
 """
-Telegram适配器测试脚本
-用于测试Telegram消息接收功能
+Telegram适配器v20.0测试脚本
+使用python-telegram-bot v20.0 API测试频道消息接收
 """
 import os
 import sys
 import json
 import asyncio
 import logging
+from typing import Dict, Any, Optional
 import time
-from typing import Dict, Any, List
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from loguru import logger
-from app.adapters.telegram import TelegramAdapter
+import pytz
+from telegram import Bot, Update
+from telegram.ext import (
+    Application, ApplicationBuilder, 
+    CommandHandler, MessageHandler, 
+    filters, ContextTypes, Defaults
+)
 
 # 配置日志
 logger.remove()
 logger.add(sys.stdout, level="DEBUG")
 
-# 全局变量存储接收到的消息
+# 全局变量存储测试状态
 received_messages = []
+# 发送的测试消息ID，用于验证是否收到了自己发送的消息
+sent_message_id = None
+# 事件标记，用于异步通知测试进程消息已接收
+message_received = asyncio.Event()
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理所有类型的消息"""
+    global sent_message_id, message_received
+    
+    logger.info(f"收到更新: {update.update_id}")
+    
+    message = None
+    # 判断消息类型
+    if update.message:
+        message = update.message
+        logger.info(f"普通消息: {message.message_id}")
+        logger.debug(f"消息内容: {message.text if hasattr(message, 'text') else '非文本消息'}")
+        
+    elif update.channel_post:
+        message = update.channel_post
+        logger.info(f"频道消息: {message.message_id}")
+        logger.debug(f"消息内容: {message.text if hasattr(message, 'text') else '非文本消息'}")
+        logger.debug(f"频道信息: {message.chat.title} ({message.chat.id})")
+        
+    elif update.edited_channel_post:
+        message = update.edited_channel_post
+        logger.info(f"编辑的频道消息: {message.message_id}")
+        
+    else:
+        logger.info(f"其他类型更新: {update}")
+        return
+    
+    # 如果收到消息，存储并检查
+    if message:
+        received_messages.append(message)
+        logger.info(f"已存储消息 ID: {message.message_id}")
+        
+        # 检查是否是我们发送的测试消息
+        if sent_message_id and message.message_id == sent_message_id:
+            logger.info(f"✓ 已接收到发送的测试消息 ID: {sent_message_id}")
+            message_received.set()  # 设置事件，通知测试进程
 
-async def test_message_callback(message: Dict[str, Any]) -> None:
-    """
-    测试用的消息回调函数
+async def main(timeout=30):
+    """运行测试脚本
     
     Args:
-        message: 收到的消息数据
+        timeout: 等待消息的最大秒数，默认30秒
     """
-    global received_messages
+    global sent_message_id, message_received, received_messages
     
-    # 存储消息
-    received_messages.append(message)
+    # 重置全局状态
+    received_messages = []
+    sent_message_id = None
+    message_received = asyncio.Event()
     
-    logger.info(f"收到新消息: ID={message.get('message_id')}, 文本={message.get('text', '')[:30]}...")
-    logger.debug(f"消息详情: {json.dumps(message, ensure_ascii=False, indent=2)}")
-
-
-async def check_messages_periodically(adapter: TelegramAdapter, interval: int = 10):
-    """
-    定期检查消息（手动方式）
-    
-    Args:
-        adapter: Telegram适配器
-        interval: 检查间隔(秒)
-    """
-    while True:
-        try:
-            logger.info("手动获取最近消息...")
-            messages = await adapter.get_messages(10)
-            if messages:
-                for msg in messages:
-                    logger.info(f"手动获取消息: ID={msg.get('message_id')}, 文本={msg.get('text', '')[:30]}...")
-            else:
-                logger.debug("没有获取到新消息")
-            
-            # 等待下一次检查
-            await asyncio.sleep(interval)
-            
-        except asyncio.CancelledError:
-            logger.debug("周期性检查已取消")
-            break
-        except Exception as e:
-            logger.error(f"周期性检查出错: {e}")
-            await asyncio.sleep(interval)
-
-
-async def test_telegram_adapter():
-    """
-    测试Telegram适配器
-    """
     # 从config.json加载配置
     config_path = "config.json"
     try:
@@ -95,91 +105,89 @@ async def test_telegram_adapter():
         
     logger.info(f"使用配置: API密钥={api_key[:5]}***, 频道={channel_id}, 代理={proxy_url}")
     
-    # 创建适配器
-    adapter = TelegramAdapter(
-        api_key=api_key,
-        channel_id=channel_id,
-        proxy_url=proxy_url
+    # 设置默认值
+    defaults = Defaults(tzinfo=pytz.UTC)
+    
+    # 构建应用
+    application = (
+        ApplicationBuilder()
+        .token(api_key)
+        .defaults(defaults)
     )
     
+    # 如果有代理，则设置代理
+    if proxy_url:
+        application = application.proxy_url(proxy_url)
+    
+    # 完成构建
+    app = application.build()
+    
+    # 添加消息处理器 - 注意处理所有可能的消息类型
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
+    
+    # 设置允许的更新类型，确保包含channel_post
+    allowed_updates = ["message", "channel_post", "edited_channel_post"]
+    
+    logger.info("启动应用...")
+    
+    # 启动应用
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=allowed_updates)
+    
+    logger.info("应用已启动，等待消息...")
+    
+    # 发送测试消息
     try:
-        # 初始化适配器
-        logger.info("初始化Telegram适配器...")
-        success = await adapter.initialize(test_message_callback)
-        if not success:
-            logger.error("初始化适配器失败")
-            return
+        bot = app.bot
+        test_message = f"测试消息: 使用v20.0 API测试频道接收功能 (时间戳: {int(time.time())})"
+        result = await bot.send_message(
+            chat_id=channel_id,
+            text=test_message
+        )
+        sent_message_id = result.message_id
+        logger.info(f"测试消息已发送: {sent_message_id}")
+    except Exception as e:
+        logger.error(f"发送测试消息失败: {e}")
+    
+    # 等待直到收到测试消息或超时
+    try:
+        logger.info(f"等待消息接收(最多{timeout}秒)...")
         
-        # 重写已处理的消息集合（测试用）
-        last_update_id = 0
-        
-        # 启动轮询
-        logger.info("启动Telegram轮询...")
-        success = await adapter.start_polling()
-        if not success:
-            logger.error("启动轮询失败")
-            return
-        
-        # 启动周期性检查任务
-        check_task = asyncio.create_task(check_messages_periodically(adapter, 20))
-        
-        # 测试发送消息
-        logger.info("发送测试消息到频道...")
-        test_message = f"这是一条测试消息，时间：{time.strftime('%Y-%m-%d %H:%M:%S')}"
-        result = await adapter.send_message(test_message)
-        logger.info(f"发送结果: {result.get('ok', False)}")
-        
-        # 等待消息
-        test_duration = 300  # 5分钟
-        logger.info(f"等待接收消息 ({test_duration}秒后自动退出)...")
-        
-        # 创建一个倒计时定时器，每10秒报告一次状态
-        start_time = time.time()
-        received_count = 0
-        
-        while time.time() - start_time < test_duration:
-            current_count = len(received_messages)
-            if current_count > received_count:
-                logger.info(f"已通过回调接收 {current_count} 条消息")
-                received_count = current_count
-            
-            # 每10秒报告一次
-            await asyncio.sleep(10)
-            logger.debug(f"测试运行中: 已经过 {int(time.time() - start_time)} 秒, 已接收 {len(received_messages)} 条消息")
-        
-        # 测试结束时的摘要
-        logger.info(f"测试结束，总共接收到 {len(received_messages)} 条消息")
-        
-        # 取消周期性检查任务
-        check_task.cancel()
+        # 使用asyncio.wait_for和事件来等待消息接收
         try:
-            await check_task
-        except asyncio.CancelledError:
-            pass
-        
+            await asyncio.wait_for(message_received.wait(), timeout=timeout)
+            logger.info("✓ 成功等待到消息接收事件")
+        except asyncio.TimeoutError:
+            logger.warning(f"测试超时({timeout}秒)，未接收到发送的消息")
+            
+            # 即使超时了，也再等待5秒看看是否会收到延迟消息
+            logger.info("额外等待5秒以检查延迟消息...")
+            await asyncio.sleep(5)
+            
     except KeyboardInterrupt:
         logger.info("测试被用户中断")
-    except Exception as e:
-        logger.error(f"测试过程中出错: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
     finally:
-        # 关闭适配器
-        logger.info("关闭Telegram适配器...")
-        await adapter.close()
-
-
-def run_test():
-    """运行测试"""
-    try:
-        asyncio.run(test_telegram_adapter())
-    except KeyboardInterrupt:
-        logger.info("测试被用户中断")
-    except Exception as e:
-        logger.error(f"运行测试时出错: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
-
+        # 停止应用
+        logger.info("停止应用...")
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        logger.info("应用已停止")
+        
+        # 报告测试结果
+        logger.info(f"测试结束，共接收到 {len(received_messages)} 条消息")
+        if len(received_messages) > 0:
+            for i, msg in enumerate(received_messages):
+                logger.info(f"消息 {i+1}: ID={msg.message_id}, 内容={msg.text if hasattr(msg, 'text') else '非文本'}")
+        
+        return received_messages
 
 if __name__ == "__main__":
-    run_test() 
+    # 允许通过命令行参数设置超时
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        timeout = int(sys.argv[1])
+    else:
+        timeout = 30  # 默认超时30秒
+    
+    asyncio.run(main(timeout)) 

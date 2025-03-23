@@ -17,7 +17,7 @@ from loguru import logger
 
 from app.core.runtime import Runtime
 from app.adapters.telegram_module import TelegramAdapterModule
-from app.analyzers.gpt_module import GptAnalyzerModule
+from app.analyzers.content_analyzer_module import ContentAnalyzerModule
 from app.storage.storage_module import StorageModule
 
 
@@ -77,9 +77,9 @@ def load_config(config_file: str = "config.json") -> Dict[str, Any]:
             "polling_interval": 60,
             "processed_messages_file": "data/processed_messages.json"
         },
-        "gpt_analyzer": {
+        "content_analyzer": {
             "api_key": "",
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-4o",
             "proxy_url": None,
             "max_tokens": 4096,
             "temperature": 0.7,
@@ -165,14 +165,14 @@ async def main_async(config, args) -> int:
         return 1
     logger.info("Telegram模块初始化成功")
     
-    # 2. 初始化GPT分析器模块
-    gpt_module = GptAnalyzerModule(runtime, "gpt_analyzer")
-    runtime.modules["gpt_analyzer"] = gpt_module
-    logger.info("初始化GPT分析器模块...")
-    if not await gpt_module.initialize(config):
-        logger.error("GPT分析器模块初始化失败")
+    # 2. 初始化内容分析器模块
+    content_analyzer_module = ContentAnalyzerModule(runtime, "content_analyzer")
+    runtime.modules["content_analyzer"] = content_analyzer_module
+    logger.info("初始化内容分析器模块...")
+    if not await content_analyzer_module.initialize(config):
+        logger.error("内容分析器模块初始化失败")
         return 1
-    logger.info("GPT分析器模块初始化成功")
+    logger.info("内容分析器模块初始化成功")
     
     # 3. 初始化存储模块
     storage_module = StorageModule(runtime, "storage")
@@ -193,12 +193,12 @@ async def main_async(config, args) -> int:
         return 1
     logger.info("Telegram模块启动成功")
     
-    # 2. 启动GPT分析器模块
-    logger.info("启动GPT分析器模块...")
-    if not await gpt_module.start():
-        logger.error("GPT分析器模块启动失败")
+    # 2. 启动内容分析器模块
+    logger.info("启动内容分析器模块...")
+    if not await content_analyzer_module.start():
+        logger.error("内容分析器模块启动失败")
         return 1
-    logger.info("GPT分析器模块启动成功")
+    logger.info("内容分析器模块启动成功")
     
     # 3. 启动存储模块
     logger.info("启动存储模块...")
@@ -209,7 +209,7 @@ async def main_async(config, args) -> int:
     
     # 添加事件订阅
     logger.info("设置事件订阅...")
-    # 将新消息事件连接到GPT分析器
+    # 将新消息事件连接到内容分析器
     for module in runtime.modules.values():
         if hasattr(module, "on_new_message") and callable(module.on_new_message):
             runtime.subscribe_event("new_message", module.on_new_message)

@@ -60,7 +60,7 @@ https://developer.chrome.com/blog/carousels-with-css?hl=zh-cn""",
 
 SAMPLE_URL_ONLY = {
     "message_id": "url_only_1",
-    "text": "@https://x.com/dotey/status/1903339286360936518",
+    "text": "https://x.com/dotey/status/1903339286360936518",
     "sender_name": "NewsBot",
     "chat_title": "Tech News"
 }
