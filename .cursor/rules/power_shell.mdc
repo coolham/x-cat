@@ -1,0 +1,38 @@
+---
+description: 
+globs: *.ps1,...
+alwaysApply: false
+---
+
+以下是处理Windows终端命令的规则建议：
+
+1. 路径处理：
+* 优先使用正斜杠(/)而非反斜杠(\)
+* 对包含空格的路径使用引号，例如："D:/My Projects/"
+* 处理UNC路径时需特别注意转义
+
+2. 文件编码
+* 需要注意，使用windows的power shell创建的文件可能是utf-16编码，因此不要用power shell来创建源代码文件
+
+3. 命令替代：
+* 用Get-ChildItem或简写gci替代dir获得更一致的输出
+* 用Get-Content替代cat读取文件内容
+* 执行ls -Force以显示隐藏文件
+
+4. 错误处理：
+* 使用$LASTEXITCODE检查命令是否成功
+* 考虑添加-ErrorAction SilentlyContinue抑制错误输出
+
+5. 递归操作：
+* 文件操作时明确使用-Recurse参数而非通配符
+* 目录列表使用-Recurse代替多级通配符
+
+6. 文件重定向：
+* 使用PowerShell原生重定向操作符>、>>和|
+* 重定向时注意编码问题，必要时指定-Encoding utf8
+
+7. 执行Python命令：
+* 优先使用python -m <module>格式而非直接调用脚本
+* 确保使用双引号包裹参数内容
+
+这些规则可以作为Cursor中处理Windows终端命令的基础，减少PowerShell引起的操作重试。

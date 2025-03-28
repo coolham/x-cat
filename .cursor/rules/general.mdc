@@ -1,0 +1,24 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# X-Cat项目文档导航
+
+本项目是一个X帖子自动分类与存储系统，用于收集、分类和存储Twitter/X帖子。
+
+## 文档结构
+
+- `docs/requirements.md`: 项目需求文档，包含系统设计原则、功能需求和技术推荐
+- `docs/development_plan.md`: 开发计划文档，记录已完成的工作和后续开发计划
+
+## 主要功能模块
+
+- 数据源适配器: 从Telegram等来源获取内容
+- 内容处理器: 提取Twitter链接和处理原始内容
+- AI分析器: 使用GPT对内容进行分类和总结
+- 存储后端: 将分析结果存储到本地数据库
+
+## 当前进度
+
+目前已完成系统基础架构和Telegram数据源适配器，下一步将实现GPT分析器。详细进度请参考`docs/development_plan.md`文档。
