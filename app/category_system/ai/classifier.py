@@ -1,233 +1,138 @@
 # -*- coding: utf-8 -*-
 """
-AI Classifier Implementation
-Provides AI-based content classification functionality
+AI分类器
+负责使用AI模型对内容进行分类
 """
-from typing import Dict, List, Optional, Any
-import json
+from typing import Dict, Optional, Any
 from loguru import logger
 
-from app.services.mcp_service import ContentAnalysisMCPService
-from ..models.category import Category, CategoryLevel
-from .prompts import get_classification_prompt
+from app.core.processors import BaseProcessor
+from ..models.category_manager import CategoryManager
 
-class AIClassifier:
-    """AI Classifier Implementation"""
+class AIClassifier(BaseProcessor):
+    """AI分类器，负责使用AI模型对内容进行分类"""
     
-    def __init__(self, runtime, category_storage):
-        """Initialize the classifier"""
-        self.runtime = runtime
-        self.category_storage = category_storage
-        self.mcp_service = None
+    def __init__(self, config: Dict[str, Any], runtime: Any):
+        """初始化AI分类器
+        
+        Args:
+            config: 配置字典
+            runtime: 运行时环境
+        """
+        super().__init__(config, runtime)
+        self.category_manager = None
     
-    async def initialize(self, config: Dict[str, Any]) -> bool:
-        """Initialize the classifier"""
+    async def initialize(self) -> bool:
+        """初始化分类器
+        
+        Returns:
+            bool: 是否成功
+        """
         try:
-            # Get AI analyzer configuration
-            analyzer_config = config.get("content_analyzer", {})
-            
-            # Create MCP service instance
-            self.mcp_service = ContentAnalysisMCPService(
-                api_key=analyzer_config.get("api_key"),
-                provider=analyzer_config.get("provider", "openrouter"),
-                model=analyzer_config.get("model"),
-                proxy_url=analyzer_config.get("proxy_url"),
-                max_tokens=analyzer_config.get("max_tokens", 2000),
-                temperature=0.3,  # Low temperature for more deterministic classification
-                max_content_length=analyzer_config.get("max_content_length", 8000),
-                max_total_length=analyzer_config.get("max_total_length", 15000),
-                format_type="markdown"
-            )
-            
+            # 检查运行时环境
+            if not hasattr(self.runtime, 'category_manager'):
+                raise RuntimeError("运行时环境未正确初始化")
+                
+            self.category_manager = self.runtime.category_manager
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize classifier: {str(e)}")
+            logger.error(f"AI分类器初始化失败: {str(e)}")
             return False
     
-    async def classify_content(self, message_id: str, content: str, 
-                             full_analysis: Dict = None) -> Optional[Dict]:
-        """Classify content"""
+    async def classify(self, content: str, language: str = 'zh') -> Dict:
+        """对内容进行分类
+        
+        Args:
+            content: 要分类的内容
+            language: 语言代码，默认'zh'
+            
+        Returns:
+            Dict: 分类结果，包含以下字段：
+                - primary_category: 一级分类名称
+                - secondary_category: 二级分类名称（可选）
+                - confidence: 分类置信度
+                - reasoning: 分类理由
+        """
         try:
-            # Get current categories
-            primary_categories = await self._get_primary_categories()
-            secondary_categories = await self._get_secondary_categories()
+            if not content:
+                return {
+                    'primary_category': '其它',
+                    'secondary_category': '待分类内容',
+                    'confidence': 0.0,
+                    'reasoning': '内容为空'
+                }
             
-            # Prepare classification prompt
-            prompt = self._prepare_classification_prompt(
-                content=content,
-                primary_categories=primary_categories,
-                secondary_categories=secondary_categories,
-                full_analysis=full_analysis
-            )
+            # 获取AI提示词
+            prompt = self.category_manager.get_ai_prompt(language)
+            if not prompt:
+                raise ValueError("获取AI提示词失败")
             
-            # Get classification from AI
-            response = await self.mcp_service.analyze_content(prompt)
+            # 构建完整提示词
+            full_prompt = f"{prompt}\n\n内容：\n{content}"
             
-            # Parse classification result
-            result = self._parse_classification_result(
-                response=response,
-                primary_categories=primary_categories,
-                secondary_categories=secondary_categories
-            )
+            # 使用关键词匹配进行分类
+            result = self._classify_by_keywords(content, language)
             
-            if result:
-                logger.info(f"Successfully classified content: {message_id}")
-                return result
-            else:
-                logger.error(f"Failed to parse classification result: {message_id}")
-                return None
-                
+            return result
+            
         except Exception as e:
-            logger.error(f"Failed to classify content: {str(e)}")
-            return None
-    
-    async def _get_primary_categories(self) -> Dict[str, Dict]:
-        """Get primary category list"""
-        primary_cats = {}
-        categories = await self.category_storage.get_category_list(CategoryLevel.PRIMARY)
-        
-        for cat in categories:
-            primary_cats[cat["name"]] = cat
-            
-        return primary_cats
-    
-    async def _get_secondary_categories(self) -> Dict[str, Dict]:
-        """Get secondary category list"""
-        secondary_cats = {}
-        categories = await self.category_storage.get_category_list(CategoryLevel.SECONDARY)
-        
-        for cat in categories:
-            secondary_cats[cat["name"]] = cat
-            
-        return secondary_cats
-    
-    def _prepare_classification_prompt(self, content: str, 
-                                     primary_categories: Dict[str, Dict],
-                                     secondary_categories: Dict[str, Dict],
-                                     full_analysis: Dict = None) -> str:
-        """Prepare classification prompt"""
-        # Format primary categories
-        primary_cat_str = ""
-        for name, cat in primary_categories.items():
-            examples = ", ".join(cat.get("examples", []))
-            primary_cat_str += f"- {name}: {cat.get('description')}. Examples: {examples}\n"
-        
-        # Format secondary categories by parent
-        secondary_cat_str = ""
-        parent_groups = {}
-        for name, cat in secondary_categories.items():
-            parent_id = cat.get("parent_id")
-            if parent_id not in parent_groups:
-                parent_groups[parent_id] = []
-            parent_groups[parent_id].append(cat)
-        
-        # Format secondary categories under each parent
-        for parent_id, cats in parent_groups.items():
-            parent_name = None
-            for name, cat in primary_categories.items():
-                if cat.get("id") == parent_id:
-                    parent_name = name
-                    break
-            
-            if not parent_name:
-                continue
-                
-            secondary_cat_str += f"\n### Secondary categories under {parent_name}:\n"
-            for cat in cats:
-                examples = ", ".join(cat.get("examples", []))
-                secondary_cat_str += f"- {cat.get('name')}: {cat.get('description')}. Examples: {examples}\n"
-        
-        # Use content summary if available
-        if full_analysis and "summary" in full_analysis:
-            content_for_classification = f"Content title/topic: {full_analysis.get('title', 'Unknown')}\n\n"
-            content_for_classification += f"Content summary: {full_analysis.get('summary')}\n\n"
-            content_for_classification += f"Content keywords: {', '.join(full_analysis.get('keywords', []))}\n\n"
-            content_for_classification += f"Content snippet: {content[:500]}..."
-        else:
-            content_for_classification = content[:3000] + ("..." if len(content) > 3000 else "")
-        
-        # Fill prompt template
-        prompt = get_classification_prompt("en").format(
-            primary_categories=primary_cat_str,
-            secondary_categories=secondary_cat_str,
-            content=content_for_classification
-        )
-        
-        return prompt
-    
-    def _parse_classification_result(self, response: str, 
-                                   primary_categories: Dict[str, Dict],
-                                   secondary_categories: Dict[str, Dict]) -> Optional[Dict]:
-        """Parse classification result"""
-        try:
-            # Extract JSON from response
-            json_start = response.find("{")
-            json_end = response.rfind("}")
-            
-            if json_start == -1 or json_end == -1:
-                logger.error(f"No JSON found in response: {response}")
-                return None
-                
-            json_str = response[json_start:json_end+1]
-            result = json.loads(json_str)
-            
-            # Validate required fields
-            if "primary_category" not in result:
-                logger.error(f"Classification result missing required fields: {result}")
-                return None
-                
-            # Find category IDs
-            primary_name = result["primary_category"]
-            primary_id = None
-            for name, cat in primary_categories.items():
-                if name.lower() == primary_name.lower():
-                    primary_id = cat["id"]
-                    primary_name = name
-                    break
-            
-            if not primary_id:
-                logger.warning(f"Primary category ID not found: {primary_name}")
-                # Try fuzzy matching
-                for name, cat in primary_categories.items():
-                    if primary_name.lower() in name.lower() or name.lower() in primary_name.lower():
-                        primary_id = cat["id"]
-                        primary_name = name
-                        logger.info(f"Using fuzzy matched primary category: {primary_name}")
-                        break
-            
-            # Find secondary category ID if specified
-            secondary_name = result.get("secondary_category")
-            secondary_id = None
-            
-            if secondary_name:
-                for name, cat in secondary_categories.items():
-                    if name.lower() == secondary_name.lower():
-                        secondary_id = cat["id"]
-                        secondary_name = name
-                        break
-                
-                if not secondary_id:
-                    logger.warning(f"Secondary category ID not found: {secondary_name}")
-                    # Try fuzzy matching
-                    for name, cat in secondary_categories.items():
-                        if secondary_name.lower() in name.lower() or name.lower() in secondary_name.lower():
-                            if cat.get("parent_id") == primary_id:  # Ensure parent matches
-                                secondary_id = cat["id"]
-                                secondary_name = name
-                                logger.info(f"Using fuzzy matched secondary category: {secondary_name}")
-                                break
-            
-            # Return result
+            logger.error(f"AI分类失败: {str(e)}")
             return {
-                "primary_category": primary_name,
-                "primary_category_id": primary_id,
-                "secondary_category": secondary_name if secondary_name else None,
-                "secondary_category_id": secondary_id,
-                "confidence": float(result.get("confidence", 0.7)),
-                "reasoning": result.get("reasoning", "")
+                'primary_category': '其它',
+                'secondary_category': '待分类内容',
+                'confidence': 0.0,
+                'reasoning': f'分类失败: {str(e)}'
             }
+    
+    def _classify_by_keywords(self, content: str, language: str) -> Dict:
+        """使用关键词匹配进行分类
+        
+        Args:
+            content: 要分类的内容
+            language: 语言代码
             
-        except Exception as e:
-            logger.error(f"Failed to parse classification result: {str(e)}, response: {response}")
-            return None
+        Returns:
+            Dict: 分类结果
+        """
+        # 定义关键词映射
+        keywords = {
+            'ai': ['人工智能', 'AI', '机器学习', '深度学习', 'artificial intelligence', 'machine learning', 'deep learning'],
+            'programming': ['编程', '开发', '代码', '软件', 'programming', 'development', 'code', 'software'],
+            'electronics': ['电子', '硬件', '电路', '元器件', 'electronics', 'hardware', 'circuit', 'component'],
+            'crypto': ['区块链', '比特币', '加密货币', 'NFT', 'blockchain', 'bitcoin', 'cryptocurrency'],
+            'tech': ['科技', '技术', '创新', '产品', 'technology', 'innovation', 'product'],
+            'personal': ['学习', '成长', '效率', '思维', 'learning', 'growth', 'efficiency', 'thinking'],
+            'health': ['健康', '饮食', '运动', '医疗', 'health', 'diet', 'exercise', 'medical'],
+            'finance': ['理财', '投资', '股票', '基金', 'finance', 'investment', 'stock', 'fund'],
+            'travel': ['旅游', '旅行', '景点', '攻略', 'travel', 'tourism', 'attraction', 'guide'],
+            'sports': ['运动', '体育', '健身', '训练', 'sports', 'fitness', 'training']
+        }
+        
+        # 计算关键词匹配度
+        max_matches = 0
+        best_category = None
+        
+        for category, words in keywords.items():
+            matches = sum(1 for word in words if word.lower() in content.lower())
+            if matches > max_matches:
+                max_matches = matches
+                best_category = category
+        
+        if best_category:
+            # 获取分类信息
+            category_info = self.category_manager.get_category_by_id(best_category)
+            if category_info:
+                return {
+                    'primary_category': category_info['name'],
+                    'secondary_category': None,
+                    'confidence': min(1.0, max_matches / 4),  # 简单的置信度计算
+                    'reasoning': f'基于关键词匹配，匹配到{max_matches}个关键词'
+                }
+        
+        return {
+            'primary_category': '其它',
+            'secondary_category': '待分类内容',
+            'confidence': 0.0,
+            'reasoning': '未匹配到任何关键词'
+        }

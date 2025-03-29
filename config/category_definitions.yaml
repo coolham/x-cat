@@ -1,0 +1,25 @@
+version: '1.0'
+last_updated: '2025-03-29'
+content_hash: 82794a484c5269f2cf888048759014e6
+categories:
+  general:
+    id: cat_general
+    name: 通用
+    description: 通用相关技术、应用和发展
+    order: 1
+    subcategories:
+      news:
+        id: subcat_general_news
+        name: 新闻
+        description: 通用下的新闻相关内容
+        order: 1
+      tech:
+        id: subcat_general_tech
+        name: 科技
+        description: 通用下的科技相关内容
+        order: 2
+      entertainment:
+        id: subcat_general_entertainment
+        name: 娱乐
+        description: 通用下的娱乐相关内容
+        order: 3

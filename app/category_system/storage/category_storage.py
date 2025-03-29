@@ -1,175 +1,200 @@
 # -*- coding: utf-8 -*-
 """
-Category Storage Interface
-Provides storage functionality for the category system
+分类存储模块
+负责存储分类结果和统计信息
 """
 import os
 import json
 import time
 from typing import Dict, List, Optional
+from pathlib import Path
 from loguru import logger
 
-from ..models.category import Category, CategoryLevel
-
 class CategoryStorage:
-    """Category Storage Interface"""
+    """分类存储模块，负责存储分类结果和统计信息"""
     
-    def __init__(self, storage_module, db_path: str = None):
-        """Initialize category storage"""
-        self.storage_module = storage_module
-        self.db_path = db_path or "data/categories.json"
-        self.data = {
-            "categories": {},
-            "content_categories": {}
-        }
-    
-    async def initialize(self) -> bool:
-        """Initialize storage system"""
-        try:
-            # Create data directory if not exists
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            
-            # Load existing data if file exists
-            if os.path.exists(self.db_path):
-                try:
-                    with open(self.db_path, 'r', encoding='utf-8') as f:
-                        self.data = json.load(f)
-                except json.JSONDecodeError:
-                    logger.warning("Corrupted JSON file detected, using empty data")
-                    self.data = {"categories": {}, "content_categories": {}}
-            
-            # Create empty file if it doesn't exist
-            if not os.path.exists(self.db_path):
-                await self._save_data()
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to initialize category storage: {str(e)}")
-            return False
-    
-    async def _save_data(self) -> None:
-        """Save data to file"""
-        try:
-            with open(self.db_path, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Failed to save category data: {str(e)}")
-            raise  # Re-raise the exception to handle it in the calling method
-    
-    async def store_category(self, category: Category) -> bool:
-        """Store a category"""
-        try:
-            category_dict = category.to_dict()
-            self.data["categories"][category.id] = category_dict
-            
-            # Update parent's children list if it's a secondary category
-            if category.level == CategoryLevel.SECONDARY and category.parent_id:
-                parent = self.data["categories"].get(category.parent_id)
-                if parent:
-                    if "children" not in parent:
-                        parent["children"] = []
-                    if category.id not in parent["children"]:
-                        parent["children"].append(category.id)
-            
-            await self._save_data()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to store category: {str(e)}")
-            return False
-    
-    async def update_category(self, category: Category) -> bool:
-        """Update a category"""
-        try:
-            if category.id not in self.data["categories"]:
-                return False
-                
-            category_dict = category.to_dict()
-            self.data["categories"][category.id] = category_dict
-            await self._save_data()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update category: {str(e)}")
-            return False
-    
-    async def delete_category(self, category_id: str) -> bool:
-        """Delete a category"""
-        try:
-            if category_id not in self.data["categories"]:
-                return False
-                
-            category = self.data["categories"][category_id]
-            
-            # Remove from parent's children list if it's a secondary category
-            if category["level"] == CategoryLevel.SECONDARY.value and category["parent_id"]:
-                parent = self.data["categories"].get(category["parent_id"])
-                if parent:
-                    if "children" not in parent:
-                        parent["children"] = []
-                    if category_id in parent["children"]:
-                        parent["children"].remove(category_id)
-            
-            # Delete the category
-            del self.data["categories"][category_id]
-            await self._save_data()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete category: {str(e)}")
-            return False
-    
-    async def get_category_by_id(self, category_id: str) -> Optional[Dict]:
-        """Get a category by ID"""
-        return self.data["categories"].get(category_id)
-    
-    async def get_category_list(self, level: Optional[CategoryLevel] = None) -> List[Dict]:
-        """Get category list"""
-        categories = list(self.data["categories"].values())
+    def __init__(self, storage_path: str = 'data/categories'):
+        """初始化分类存储
         
-        if level is not None:
-            categories = [cat for cat in categories if cat["level"] == level.value]
-            
-        return categories
+        Args:
+            storage_path: 存储目录路径
+        """
+        self.storage_path = Path(storage_path)
+        self.results_path = self.storage_path / 'results.json'
+        self.stats_path = self.storage_path / 'statistics.json'
+        
+        # 确保存储目录存在
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        
+        # 初始化数据
+        self.results = self._load_results()
+        self.statistics = self._load_statistics()
     
-    async def store_content_category(self, message_id: str, primary_cat_id: str, 
-                                   secondary_cat_id: Optional[str], confidence: float) -> bool:
-        """Store content classification result"""
+    def _load_results(self) -> Dict:
+        """加载分类结果"""
         try:
-            # Verify categories exist
-            if primary_cat_id not in self.data["categories"]:
-                return False
-            if secondary_cat_id and secondary_cat_id not in self.data["categories"]:
-                return False
+            if self.results_path.exists():
+                with open(self.results_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.error(f"加载分类结果失败: {str(e)}")
+            return {}
+    
+    def _load_statistics(self) -> Dict:
+        """加载统计信息"""
+        try:
+            if self.stats_path.exists():
+                with open(self.stats_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {
+                'category_usage': {},
+                'classification_accuracy': {},
+                'daily_stats': {}
+            }
+        except Exception as e:
+            logger.error(f"加载统计信息失败: {str(e)}")
+            return {
+                'category_usage': {},
+                'classification_accuracy': {},
+                'daily_stats': {}
+            }
+    
+    def _save_results(self) -> None:
+        """保存分类结果"""
+        try:
+            with open(self.results_path, 'w', encoding='utf-8') as f:
+                json.dump(self.results, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"保存分类结果失败: {str(e)}")
+            raise
+    
+    def _save_statistics(self) -> None:
+        """保存统计信息"""
+        try:
+            with open(self.stats_path, 'w', encoding='utf-8') as f:
+                json.dump(self.statistics, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"保存统计信息失败: {str(e)}")
+            raise
+    
+    def store_classification(self, content_id: str, classification: Dict) -> bool:
+        """存储分类结果
+        
+        Args:
+            content_id: 内容ID
+            classification: 分类结果
             
-            self.data["content_categories"][message_id] = {
-                "primary_id": primary_cat_id,
-                "secondary_id": secondary_cat_id,
-                "confidence": confidence,
-                "created_at": int(time.time())
+        Returns:
+            bool: 是否存储成功
+        """
+        try:
+            # 存储分类结果
+            self.results[content_id] = {
+                'classification': classification,
+                'timestamp': int(time.time())
+            }
+            self._save_results()
+            
+            # 更新统计信息
+            self._update_statistics(classification)
+            
+            return True
+        except Exception as e:
+            logger.error(f"存储分类结果失败: {str(e)}")
+            return False
+    
+    def get_classification(self, content_id: str) -> Optional[Dict]:
+        """获取分类结果
+        
+        Args:
+            content_id: 内容ID
+            
+        Returns:
+            Optional[Dict]: 分类结果，如果不存在则返回None
+        """
+        return self.results.get(content_id)
+    
+    def _update_statistics(self, classification: Dict) -> None:
+        """更新统计信息
+        
+        Args:
+            classification: 分类结果
+        """
+        try:
+            # 更新分类使用次数
+            primary_cat = classification['primary_category']
+            if primary_cat not in self.statistics['category_usage']:
+                self.statistics['category_usage'][primary_cat] = 0
+            self.statistics['category_usage'][primary_cat] += 1
+            
+            # 更新每日统计
+            today = time.strftime('%Y-%m-%d')
+            if today not in self.statistics['daily_stats']:
+                self.statistics['daily_stats'][today] = {
+                    'total': 0,
+                    'by_category': {}
+                }
+            
+            daily = self.statistics['daily_stats'][today]
+            daily['total'] += 1
+            
+            if primary_cat not in daily['by_category']:
+                daily['by_category'][primary_cat] = 0
+            daily['by_category'][primary_cat] += 1
+            
+            # 保存统计信息
+            this._save_statistics()
+            
+        except Exception as e:
+            logger.error(f"更新统计信息失败: {str(e)}")
+    
+    def get_statistics(self) -> Dict:
+        """获取统计信息
+        
+        Returns:
+            Dict: 统计信息
+        """
+        return self.statistics
+    
+    def get_category_usage(self) -> Dict[str, int]:
+        """获取分类使用次数
+        
+        Returns:
+            Dict[str, int]: 分类使用次数
+        """
+        return self.statistics['category_usage']
+    
+    def get_daily_stats(self, date: str = None) -> Dict:
+        """获取每日统计信息
+        
+        Args:
+            date: 日期，格式为YYYY-MM-DD，如果为None则返回最新日期
+            
+        Returns:
+            Dict: 每日统计信息
+        """
+        if date is None:
+            date = time.strftime('%Y-%m-%d')
+        return self.statistics['daily_stats'].get(date, {})
+    
+    def clear_old_data(self, days: int = 30) -> None:
+        """清理旧数据
+        
+        Args:
+            days: 保留天数
+        """
+        try:
+            # 清理旧的每日统计
+            cutoff_date = time.strftime('%Y-%m-%d', 
+                                      time.localtime(time.time() - days * 24 * 3600))
+            self.statistics['daily_stats'] = {
+                date: stats for date, stats in self.statistics['daily_stats'].items()
+                if date >= cutoff_date
             }
             
-            # Update category usage count
-            await self._increment_category_usage(primary_cat_id)
-            if secondary_cat_id:
-                await self._increment_category_usage(secondary_cat_id)
+            # 保存更新后的统计信息
+            self._save_statistics()
             
-            await self._save_data()
-            return True
         except Exception as e:
-            logger.error(f"Failed to store classification result: {str(e)}")
-            return False
-    
-    async def _increment_category_usage(self, category_id: str) -> None:
-        """Increment category usage count"""
-        if category_id in self.data["categories"]:
-            self.data["categories"][category_id]["count"] += 1
-            self.data["categories"][category_id]["updated_at"] = int(time.time())
-            await self._save_data()
-    
-    async def save_analysis_results(self, results: Dict) -> bool:
-        """Save analysis results"""
-        try:
-            self.data["analysis_results"] = results
-            await self._save_data()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save analysis results: {str(e)}")
-            return False
+            logger.error(f"清理旧数据失败: {str(e)}")

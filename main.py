@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 X-Cat: 主运行框架
-提供模块化架构来协调和管理各种功能模块
+提供基于asyncio的异步处理架构
 """
 import os
 import sys
@@ -8,17 +9,34 @@ import json
 import asyncio
 import argparse
 import traceback
-import signal
 from typing import Dict, Any, Optional
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from dotenv import load_dotenv
 
 from loguru import logger
 
 from app.core.runtime import Runtime
-from app.adapters.telegram_module import TelegramAdapterModule
-from app.analyzers.content_analyzer_module import ContentAnalyzerModule
-from app.storage.storage_module import StorageModule
+from app.core.pipeline import Pipeline
+from app.core.processors import (
+    ContentExtractor,
+    ContentPreprocessor,
+    ContentClassifier,
+    ContentDistributor,
+    ContentStorage
+)
+from app.core.processor import ContentProcessor
+from app.preprocessor.content_preprocessor import ContentPreprocessor
+from app.adapters.telegram import TelegramAdapter
 
+# 添加项目根目录到Python路径
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
+class DateTimeEncoder(json.JSONEncoder):
+    """自定义JSON编码器，用于处理datetime对象"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> None:
     """
@@ -67,18 +85,32 @@ def load_config(config_file: str = "config.json") -> Dict[str, Any]:
             "log_level": "INFO",
             "log_file": "logs/app.log",
             "data_dir": "data",
-            "worker_threads": 4
+            "worker_threads": 4,
+            "timezone": "Asia/Shanghai"  # 添加默认时区
         },
         "telegram_adapter": {
             "api_key": "",
             "channel_id": "",
             "proxy_url": None,
             "polling_interval": 60,
-            "processed_messages_file": "data/processed_messages.json"
+            "processed_messages_file": "data/processed_messages.json",
+            "timezone": "Asia/Shanghai"  # 添加 Telegram 时区设置
+        },
+        "twitter_api": {
+            "enabled": False,
+            "api_key": "",
+            "api_secret": "",
+            "access_token": "",
+            "access_token_secret": "",
+            "bearer_token": "",
+            "proxy_url": None,
+            "timeout": 30,
+            "max_retries": 3,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         },
         "content_analyzer": {
             "api_key": "",
-            "model": "gpt-4o",
+            "model": "gpt-4",
             "proxy_url": None,
             "max_tokens": 4096,
             "temperature": 0.7,
@@ -91,7 +123,37 @@ def load_config(config_file: str = "config.json") -> Dict[str, Any]:
     }
     
     try:
-        # 检查文件是否存在
+        # 加载 .env 文件
+        load_dotenv()
+        
+        # 从环境变量更新配置
+        env_config = {
+            "telegram_adapter": {
+                "api_key": os.getenv("TELEGRAM_API_KEY", ""),
+                "channel_id": os.getenv("TELEGRAM_CHANNEL_ID", ""),
+                "proxy_url": os.getenv("TELEGRAM_PROXY_URL"),
+                "polling_interval": int(os.getenv("TELEGRAM_POLLING_INTERVAL", "60")),
+                "timezone": os.getenv("TELEGRAM_TIMEZONE", "Asia/Shanghai"),  # 添加时区环境变量
+            },
+            "twitter_api": {
+                "api_key": os.getenv("TWITTER_API_KEY", ""),
+                "api_secret": os.getenv("TWITTER_API_SECRET", ""),
+                "access_token": os.getenv("TWITTER_ACCESS_TOKEN", ""),
+                "access_token_secret": os.getenv("TWITTER_ACCESS_TOKEN_SECRET", ""),
+                "bearer_token": os.getenv("TWITTER_BEARER_TOKEN", ""),
+                "proxy_url": os.getenv("TWITTER_PROXY_URL"),
+            },
+            "content_analyzer": {
+                "api_key": os.getenv("OPENAI_API_KEY", ""),
+                "proxy_url": os.getenv("OPENAI_PROXY_URL"),
+            },
+            "storage": {
+                "db_path": os.getenv("DB_PATH", "data/storage.db"),
+                "backup_dir": os.getenv("BACKUP_DIR", "data/backups"),
+            }
+        }
+        
+        # 检查 config.json 文件是否存在
         if not os.path.exists(config_file):
             logger.warning(f"配置文件 '{config_file}' 不存在，使用默认配置")
             # 尝试加载示例配置
@@ -99,26 +161,39 @@ def load_config(config_file: str = "config.json") -> Dict[str, Any]:
             if os.path.exists(example_file):
                 logger.info(f"加载示例配置文件: {example_file}")
                 with open(example_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    config = json.load(f)
             else:
                 logger.warning(f"示例配置文件 '{example_file}' 不存在，使用硬编码默认配置")
-                return default_config
+                config = default_config
+        else:
+            # 加载配置文件
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                logger.info(f"已加载配置文件: {config_file}")
         
-        # 加载配置文件
-        with open(config_file, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            logger.info(f"已加载配置文件: {config_file}")
+        # 合并配置
+        for section in default_config:
+            if section not in config:
+                config[section] = default_config[section]
+            else:
+                for key in default_config[section]:
+                    if key not in config[section]:
+                        config[section][key] = default_config[section][key]
+        
+        # 使用环境变量覆盖配置
+        for section, values in env_config.items():
+            if section not in config:
+                config[section] = {}
+            for key, value in values.items():
+                if value:  # 只覆盖非空值
+                    config[section][key] = value
+        
+        # 验证必要的配置
+        if not config["telegram_adapter"]["api_key"] or not config["telegram_adapter"]["channel_id"]:
+            logger.error("缺少必要的 Telegram 配置信息")
+            return None
             
-            # 合并配置
-            for section in default_config:
-                if section not in config:
-                    config[section] = default_config[section]
-                else:
-                    for key in default_config[section]:
-                        if key not in config[section]:
-                            config[section][key] = default_config[section][key]
-            
-            return config
+        return config
     
     except Exception as e:
         logger.error(f"加载配置文件出错: {str(e)}")
@@ -141,134 +216,123 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def main_async(config, args) -> int:
+async def process_message(message: Dict[str, Any], pipeline: Pipeline) -> None:
     """
-    异步主函数
+    处理消息
     
     Args:
-        config: 配置字典
-        args: 命令行参数
+        message: 消息数据
+        pipeline: 处理流水线
     """
-    # 创建运行时
-    runtime = Runtime()
-    
-    # 注册并手动初始化所有模块
-    logger.info("注册并初始化所有模块...")
-    
-    # 1. 初始化Telegram模块
-    telegram_module = TelegramAdapterModule(runtime, "telegram_adapter")
-    runtime.modules["telegram_adapter"] = telegram_module
-    logger.info("初始化Telegram模块...")
-    if not await telegram_module.initialize(config):
-        logger.error("Telegram模块初始化失败")
-        return 1
-    logger.info("Telegram模块初始化成功")
-    
-    # 2. 初始化内容分析器模块
-    content_analyzer_module = ContentAnalyzerModule(runtime, "content_analyzer")
-    runtime.modules["content_analyzer"] = content_analyzer_module
-    logger.info("初始化内容分析器模块...")
-    if not await content_analyzer_module.initialize(config):
-        logger.error("内容分析器模块初始化失败")
-        return 1
-    logger.info("内容分析器模块初始化成功")
-    
-    # 3. 初始化存储模块
-    storage_module = StorageModule(runtime, "storage")
-    runtime.modules["storage"] = storage_module
-    logger.info("初始化存储模块...")
-    if not await storage_module.initialize(config):
-        logger.error("存储模块初始化失败")
-        return 1
-    logger.info("存储模块初始化成功")
-    
-    # 启动所有模块
-    logger.info("启动所有模块...")
-    
-    # 1. 启动Telegram模块
-    logger.info("启动Telegram模块...")
-    if not await telegram_module.start():
-        logger.error("Telegram模块启动失败")
-        return 1
-    logger.info("Telegram模块启动成功")
-    
-    # 2. 启动内容分析器模块
-    logger.info("启动内容分析器模块...")
-    if not await content_analyzer_module.start():
-        logger.error("内容分析器模块启动失败")
-        return 1
-    logger.info("内容分析器模块启动成功")
-    
-    # 3. 启动存储模块
-    logger.info("启动存储模块...")
-    if not await storage_module.start():
-        logger.error("存储模块启动失败")
-        return 1
-    logger.info("存储模块启动成功")
-    
-    # 添加事件订阅
-    logger.info("设置事件订阅...")
-    # 将新消息事件连接到内容分析器
-    for module in runtime.modules.values():
-        if hasattr(module, "on_new_message") and callable(module.on_new_message):
-            runtime.subscribe_event("new_message", module.on_new_message)
-            logger.info(f"模块 {module.module_id} 订阅了新消息事件")
-    
-    # 系统健康检查循环
-    logger.info("系统运行中...")
     try:
-        while True:
-            # 检查所有模块状态
-            all_healthy = True
-            for module_id, module in runtime.modules.items():
-                try:
-                    if module.state.name == "RUNNING":
-                        healthy = await module.health_check()
-                        if not healthy:
-                            logger.warning(f"模块 '{module_id}' 健康检查失败")
-                            all_healthy = False
-                except Exception as e:
-                    logger.error(f"模块 '{module_id}' 健康检查错误: {str(e)}")
-                    all_healthy = False
+        # 构建标准格式的消息
+        processed_message = {
+            'text': message.get('text', ''),
+            'content': message.get('text', ''),  # 同时提供 content 字段
+            'source': 'telegram',
+            'source_type': 'telegram',
+            'metadata': {
+                'message_id': message.get('message_id'),
+                'chat_id': message.get('chat_id'),
+                'chat_type': message.get('chat_type'),
+                'date': message.get('date'),
+                'from_user': message.get('from_user'),
+                'chat': message.get('chat'),
+                'message_type': message.get('message_type', 'text')
+            }
+        }
+        
+        # 添加URL字段用于缓存
+        if processed_message['text']:
+            processed_message['url'] = f"telegram:{processed_message['metadata']['message_id']}"
+        
+        # 处理消息
+        result = await pipeline.process(processed_message)
+        
+        if result and result.get('success', False):
+            logger.info(f"消息处理完成: {result.get('url', 'unknown')}")
+        else:
+            error_msg = result.get('error', '未知错误') if result else '处理失败'
+            logger.warning(f"消息处理失败: {error_msg}")
             
-            if not all_healthy:
-                logger.warning("一些模块状态异常")
+    except Exception as e:
+        logger.error(f"处理消息出错: {str(e)}")
+        logger.debug(traceback.format_exc())
+
+async def main_async(config: Dict[str, Any], args: argparse.Namespace) -> int:
+    """异步主函数"""
+    try:
+        # 初始化运行时环境
+        runtime = Runtime(config)
+        if not await runtime.initialize():
+            logger.error("初始化运行时环境失败")
+            return 1
             
-            # 等待30秒再次检查
-            await asyncio.sleep(30)
-    except asyncio.CancelledError:
-        logger.info("收到取消信号")
-    except KeyboardInterrupt:
-        logger.info("收到中断信号")
-    finally:
-        # 关闭所有模块
-        logger.info("关闭所有模块...")
-        for module_id, module in reversed(list(runtime.modules.items())):
-            try:
-                logger.info(f"正在停止模块: {module_id}")
-                await module.stop()
-                logger.info(f"模块已停止: {module_id}")
-            except Exception as e:
-                logger.error(f"停止模块 '{module_id}' 时出错: {str(e)}")
-    
-    logger.info("系统已停止")
-    return 0
+        # 初始化Telegram适配器
+        telegram_config = config.get('telegram_adapter', {})
+        telegram = TelegramAdapter(
+            api_key=telegram_config.get('api_key'),
+            channel_id=telegram_config.get('channel_id')
+        )
+        
+        # 设置消息回调
+        async def message_callback(message: Dict[str, Any]) -> None:
+            await process_message(message, runtime.pipeline)
+        
+        # 初始化Telegram适配器
+        if not await telegram.initialize(message_callback):
+            logger.error("初始化Telegram适配器失败")
+            return 1
+            
+        # 启动轮询
+        if not await telegram.start_polling():
+            logger.error("启动Telegram轮询失败")
+            return 1
+            
+        logger.info("系统启动成功，开始处理消息...")
+        
+        try:
+            while True:
+                # 获取新消息
+                messages = telegram.get_received_messages()
+                if messages:
+                    for message in messages:
+                        await message_callback(message)
+                    
+                    # 清空已处理的消息
+                    telegram._received_messages = []
+                    logger.debug("已清空消息列表")
+                
+                # 等待一段时间再检查新消息
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("收到停止信号，正在关闭...")
+        finally:
+            # 关闭资源
+            await telegram.stop_polling()
+            await runtime.stop()
+        
+        return 0
+        
+    except Exception as e:
+        logger.error(f"运行出错: {str(e)}")
+        logger.debug(traceback.format_exc())
+        return 1
 
 
 def main() -> int:
-    """
-    主函数
-    
-    Returns:
-        退出代码
-    """
+    """主函数"""
     try:
         # 解析命令行参数
         args = parse_args()
         
         # 加载配置
         config = load_config(args.config)
-        
+        if not config:
+            logger.error("配置加载失败，程序退出")
+            return 1
+            
         # 优先使用命令行参数
         if args.log_level:
             config['system']['log_level'] = args.log_level
@@ -276,7 +340,7 @@ def main() -> int:
             config['system']['log_file'] = args.log_file
         if args.data_dir:
             config['system']['data_dir'] = args.data_dir
-        
+            
         # 设置日志
         setup_logging(
             log_level=config['system']['log_level'],
@@ -289,10 +353,10 @@ def main() -> int:
         # 确保日志目录存在
         if 'log_file' in config['system'] and config['system']['log_file']:
             os.makedirs(os.path.dirname(config['system']['log_file']), exist_ok=True)
-        
+            
         # 运行异步主函数
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(main_async(config, args))
+        return asyncio.run(main_async(config, args))
+        
     except Exception as e:
         logger.error(f"运行出错: {str(e)}")
         logger.debug(traceback.format_exc())

@@ -1,6 +1,6 @@
 """
 X-Cat Runtime Module
-核心运行时组件，负责管理模块生命周期和协调模块间通信
+核心运行时组件，负责管理组件生命周期和协调组件间通信
 """
 import os
 import time
@@ -8,378 +8,450 @@ import asyncio
 import signal
 import traceback
 from typing import Dict, List, Any, Optional, Set, Type, Callable
-
 from loguru import logger
+from datetime import datetime
 
-from app.core import Module, ModuleState, Event
+from app.extractors.base import BaseExtractor
+from app.extractors.telegram import TelegramExtractor
+from app.extractors.url import URLExtractor
+from app.preprocessor.content_preprocessor import ContentPreprocessor
+from app.category_system.ai.classifier import AIClassifier
+from app.category_system.models.category_manager import CategoryManager
+from app.storage.storage import Storage
+from app.distributor.distributor import Distributor
+from app.core.pipeline import Pipeline, PipelineStage
 
 
 class Runtime:
     """
     系统运行时
-    负责管理模块生命周期和协调模块间通信
+    负责管理组件生命周期和协调组件间通信
     """
     
-    def __init__(self):
-        """初始化运行时"""
-        self.modules: Dict[str, Module] = {}
-        self.event_subscribers: Dict[str, List[Callable]] = {}
+    def __init__(self, config: Dict[str, Any]):
+        """初始化运行时
+        
+        Args:
+            config: 配置字典
+        """
+        self.config = config
         self.running = False
         self.tasks = []
         
         # 初始化信号处理
         signal.signal(signal.SIGINT, self._handle_interrupt)
         signal.signal(signal.SIGTERM, self._handle_interrupt)
-    
+        
+        # 初始化组件
+        self.extractors = {}  # 内容提取器
+        self.preprocessor = None  # 内容预处理器
+        self.classifier = None  # AI分类器
+        self.distributor = None  # 分发器
+        self.storage = None  # 存储组件
+        
+        # 分类管理器将在initialize中创建
+        self.category_manager = None
+        
+        # 流水线
+        self.pipeline = Pipeline()
+        
+        self.start_time = datetime.now()
+        self.health_check_interval = config.get('health_check_interval', 60)
+        self._health_check_task: Optional[asyncio.Task] = None
+        self._is_healthy = True
+        
     def _handle_interrupt(self, sig, frame):
         """处理中断信号"""
-        logger.info("Received interrupt signal, shutting down system...")
+        logger.info("收到中断信号，正在关闭系统...")
         self.running = False
         
-    def register_module(self, module_class: Type[Module], module_id: str, **kwargs) -> Module:
-        """
-        注册模块
+    async def initialize(self) -> bool:
+        """初始化运行时环境
         
-        Args:
-            module_class: 模块类
-            module_id: 模块ID
-            **kwargs: 其他参数
-            
         Returns:
-            注册的模块实例
+            bool: 是否初始化成功
         """
-        if module_id in self.modules:
-            logger.warning(f"Module ID '{module_id}' already exists, will be replaced")
-        
-        module = module_class(self, module_id, **kwargs)
-        self.modules[module_id] = module
-        logger.info(f"Registered module: {module.name} (ID: {module_id})")
-        return module
-    
-    def unregister_module(self, module_id: str) -> bool:
-        """
-        注销模块
-        
-        Args:
-            module_id: 模块ID
-            
-        Returns:
-            是否成功注销
-        """
-        if module_id not in self.modules:
-            logger.warning(f"Module ID '{module_id}' does not exist, cannot unregister")
-            return False
-        
-        module = self.modules[module_id]
-        # 检查是否有其他模块依赖此模块
-        for other_id, other_module in self.modules.items():
-            if module_id in other_module.get_dependencies():
-                logger.warning(f"Module '{other_id}' depends on '{module_id}', cannot unregister")
+        try:
+            # 1. 初始化分类管理器
+            self.category_manager = CategoryManager()
+            if not await self.category_manager.initialize():
+                logger.error("分类管理器初始化失败")
                 return False
-        
-        del self.modules[module_id]
-        logger.info(f"Unregistered module: {module.name} (ID: {module_id})")
-        return True
-    
-    def has_module(self, module_id: str) -> bool:
-        """
-        检查是否存在指定ID的模块
-        
-        Args:
-            module_id: 模块ID
-            
-        Returns:
-            是否存在
-        """
-        return module_id in self.modules
-    
-    def get_module(self, module_id: str) -> Optional[Module]:
-        """
-        获取指定ID的模块
-        
-        Args:
-            module_id: 模块ID
-            
-        Returns:
-            模块实例，不存在则返回None
-        """
-        return self.modules.get(module_id)
-    
-    async def initialize_modules(self, config: Dict[str, Any]) -> bool:
-        """
-        初始化所有模块
-        
-        Args:
-            config: 全局配置
-            
-        Returns:
-            是否所有模块都成功初始化
-        """
-        # 解析依赖关系，确定初始化顺序
-        module_order = self._resolve_dependencies()
-        
-        # 按顺序初始化模块
-        all_success = True
-        for module_id in module_order:
-            module = self.modules[module_id]
-            
-            # 跳过已经初始化的模块
-            if module.state.name in ["INITIALIZED", "RUNNING", "PAUSED"]:
-                logger.debug(f"跳过已初始化的模块: {module_id}")
-                continue
                 
-            try:
-                logger.debug(f"正在初始化模块: {module_id}")
-                if await module.initialize(config):
-                    logger.info(f"Module '{module_id}' initialized successfully")
-                else:
-                    logger.error(f"Module '{module_id}' initialization failed")
-                    all_success = False
-            except Exception as e:
-                logger.error(f"Module '{module_id}' initialization error: {str(e)}")
-                all_success = False
-        
-        return all_success
-    
-    async def start_modules(self) -> bool:
-        """
-        启动所有模块
-        
-        Returns:
-            是否所有模块都成功启动
-        """
-        # 确定启动顺序，考虑依赖关系
-        start_order = self._resolve_dependencies()
-        if not start_order:
-            logger.error("Circular dependency detected, cannot determine module start order")
-            return False
-        
-        all_successful = True
-        for module_id in start_order:
-            module = self.modules[module_id]
-            try:
-                success = await module.start()
-                if not success:
-                    logger.error(f"Module '{module_id}' start failed")
-                    all_successful = False
-                else:
-                    logger.info(f"Module '{module_id}' started successfully")
-            except Exception as e:
-                logger.error(f"Module '{module_id}' start error: {str(e)}")
-                logger.debug(traceback.format_exc())
-                all_successful = False
-                module.state = ModuleState.ERROR
-        
-        return all_successful
-    
-    async def stop_modules(self) -> bool:
-        """
-        停止所有模块
-        
-        Returns:
-            是否所有模块都成功停止
-        """
-        # 按依赖关系的反向顺序停止
-        stop_order = list(reversed(self._resolve_dependencies()))
-        
-        all_successful = True
-        for module_id in stop_order:
-            module = self.modules[module_id]
-            try:
-                success = await module.stop()
-                if not success:
-                    logger.error(f"Module '{module_id}' stop failed")
-                    all_successful = False
-                else:
-                    logger.info(f"Module '{module_id}' stopped successfully")
-            except Exception as e:
-                logger.error(f"Module '{module_id}' stop error: {str(e)}")
-                logger.debug(traceback.format_exc())
-                all_successful = False
-                module.state = ModuleState.ERROR
-        
-        return all_successful
-    
-    def _resolve_dependencies(self) -> List[str]:
-        """
-        解析模块依赖关系，确定启动顺序
-        
-        Returns:
-            模块ID列表，按启动顺序排序
-        """
-        # 拓扑排序算法
-        visited = set()
-        temp_visited = set()
-        order = []
-        
-        def visit(node):
-            if node in temp_visited:
-                # 检测到循环依赖
+            # 2. 初始化提取器
+            telegram_config = self.config.get('telegram_adapter', {})
+            self.extractors['telegram'] = TelegramExtractor(telegram_config)
+            if not await self.extractors['telegram'].initialize():
+                logger.error("Telegram 提取器初始化失败")
                 return False
-            if node in visited:
-                return True
+                
+            self.extractors['url'] = URLExtractor(self.config.get('url_extractor', {}))
             
-            temp_visited.add(node)
+            # 3. 初始化预处理器
+            preprocessor_config = self.config.get('preprocessor', {
+                'proxy_url': self.config.get('system', {}).get('proxy_url'),
+                'timeout': 30,
+                'max_content_length': 8000,
+            })
+            self.preprocessor = ContentPreprocessor(
+                config=self.config,  # 传入完整的配置
+                runtime=self,
+                **preprocessor_config
+            )
+            if not await self.preprocessor.initialize():
+                logger.error("预处理器初始化失败")
+                return False
+                
+            # 4. 初始化分类器
+            self.classifier = AIClassifier(
+                config=self.config.get('classifier', {}),
+                runtime=self
+            )
+            if not await self.classifier.initialize():
+                logger.error("分类器初始化失败")
+                return False
+                
+            # 5. 初始化分发器
+            self.distributor = Distributor(self.config.get('distributor', {}))
+            if not await self.distributor.initialize():
+                logger.error("分发器初始化失败")
+                return False
+                
+            # 6. 初始化存储组件
+            self.storage = Storage(self.config.get('storage', {}))
+            if not await self.storage.initialize():
+                logger.error("存储组件初始化失败")
+                return False
+                
+            # 7. 构建流水线
+            self.pipeline.add_stage("提取", self._extract_content)
+            self.pipeline.add_stage("预处理", self._preprocess_content)
+            self.pipeline.add_stage("分类", self._classify_content)
+            self.pipeline.add_stage("分发", self._distribute_content)
+            self.pipeline.add_stage("存储", self._store_content)
             
-            # 访问所有依赖
-            module = self.modules[node]
-            for dependency in module.get_dependencies():
-                if dependency not in self.modules:
-                    logger.warning(f"Module '{node}' depends on non-existent module '{dependency}'")
-                    continue
-                if not visit(dependency):
-                    return False
+            # 启动健康检查
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
             
-            temp_visited.remove(node)
-            visited.add(node)
-            order.append(node)
+            logger.info("运行时环境初始化成功")
             return True
-        
-        # 访问所有模块
-        for module_id in self.modules:
-            if module_id not in visited:
-                if not visit(module_id):
-                    return []  # 存在循环依赖
-        
-        return order
-    
-    async def publish_event(self, event: Event) -> None:
-        """
-        发布事件
-        
-        Args:
-            event: 事件对象
-        """
-        event_type = event.event_type
-        
-        logger.debug(f"正在发布事件: 类型={event_type}, 来源={event.source}")
-        
-        if event_type not in self.event_subscribers or not self.event_subscribers[event_type]:
-            logger.debug(f"没有订阅者处理事件: {event_type}")
-            return
-        
-        subscriber_count = len(self.event_subscribers[event_type])
-        logger.debug(f"找到 {subscriber_count} 个订阅者处理事件: {event_type}")
-        
-        # 异步执行所有回调函数
-        tasks = []
-        for callback in self.event_subscribers[event_type]:
-            # 记录回调信息
-            callback_info = getattr(callback, "__qualname__", str(callback))
-            logger.debug(f"调用事件回调: {callback_info}")
             
-            # 创建异步任务
-            task = asyncio.create_task(self._safe_callback(callback, event))
-            tasks.append(task)
-        
-        # 等待所有回调完成
-        if tasks:
-            try:
-                await asyncio.gather(*tasks)
-                logger.debug(f"所有事件回调已完成: {event_type}")
-            except Exception as e:
-                logger.error(f"事件回调过程中出错: {str(e)}")
-    
-    async def _safe_callback(self, callback, event):
-        """安全地执行回调函数"""
-        try:
-            await callback(event)
         except Exception as e:
-            import traceback
-            callback_info = getattr(callback, "__qualname__", str(callback))
-            logger.error(f"事件回调 '{callback_info}' 执行出错: {str(e)}")
+            logger.error(f"运行时环境初始化失败: {str(e)}")
             logger.debug(traceback.format_exc())
-    
-    def subscribe_event(self, event_type: str, callback: Callable) -> None:
-        """
-        订阅事件
+            return False
+            
+    async def _extract_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """提取内容
         
         Args:
-            event_type: 事件类型
-            callback: 回调函数
-        """
-        if event_type not in self.event_subscribers:
-            self.event_subscribers[event_type] = []
-        self.event_subscribers[event_type].append(callback)
-    
-    def unsubscribe_event(self, event_type: str, callback: Callable) -> bool:
-        """
-        取消订阅事件
-        
-        Args:
-            event_type: 事件类型
-            callback: 回调函数
+            data: 输入数据
             
         Returns:
-            是否成功取消订阅
+            Dict[str, Any]: 提取结果
         """
-        if event_type not in self.event_subscribers:
-            return False
-        
         try:
-            self.event_subscribers[event_type].remove(callback)
+            source_type = data.get('source_type')
+            if not source_type:
+                logger.warning("未指定源类型，跳过提取")
+                return data
+                
+            if source_type not in self.extractors:
+                logger.warning(f"不支持的源类型: {source_type}")
+                return data
+                
+            extractor = self.extractors[source_type]
+            if not extractor:
+                logger.warning(f"提取器未初始化: {source_type}")
+                return data
+                
+            result = await extractor.extract(data)
+            if not result:
+                logger.warning(f"提取结果为空: {source_type}")
+                return data
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"内容提取失败: {str(e)}")
+            logger.debug(traceback.format_exc())
+            return data
+            
+    async def _preprocess_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """预处理内容
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Dict[str, Any]: 预处理结果
+        """
+        try:
+            if not self.preprocessor:
+                raise RuntimeError("预处理器未初始化")
+                
+            return await self.preprocessor.process(data)
+            
+        except Exception as e:
+            logger.error(f"内容预处理失败: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'data': data
+            }
+            
+    async def _classify_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """分类内容
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Dict[str, Any]: 分类结果
+        """
+        try:
+            if not self.classifier or not self.category_manager:
+                raise RuntimeError("分类器或分类管理器未初始化")
+                
+            # 获取分类提示词
+            prompt = self.category_manager.get_ai_prompt()
+            
+            # 进行分类
+            result = await self.classifier.classify(data['content'], prompt)
+            
+            # 更新数据
+            data['classification'] = result
+            return data
+            
+        except Exception as e:
+            logger.error(f"内容分类失败: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'data': data
+            }
+            
+    async def _distribute_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """分发内容
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Dict[str, Any]: 分发结果
+        """
+        try:
+            if not self.distributor:
+                raise RuntimeError("分发器未初始化")
+                
+            return await self.distributor.distribute(data)
+            
+        except Exception as e:
+            logger.error(f"内容分发失败: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'data': data
+            }
+            
+    async def _store_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """存储内容
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Dict[str, Any]: 存储结果
+        """
+        try:
+            if not self.storage:
+                raise RuntimeError("存储未初始化")
+                
+            return await self.storage.store(data)
+            
+        except Exception as e:
+            logger.error(f"内容存储失败: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'data': data
+            }
+            
+    async def process_content(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        """处理内容
+        
+        Args:
+            content: 输入内容
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        try:
+            # 创建初始Observable
+            stream = self.pipeline.process(content)
+            
+            # 订阅处理结果
+            result = None
+            def on_next(data):
+                nonlocal result
+                result = data
+                
+            def on_error(error):
+                logger.error(f"处理错误: {str(error)}")
+                
+            def on_completed():
+                logger.info("处理完成")
+                
+            # 执行处理
+            stream.subscribe(
+                on_next=on_next,
+                on_error=on_error,
+                on_completed=on_completed
+            )
+            
+            return result or {
+                'success': False,
+                'error': '处理失败',
+                'data': content
+            }
+            
+        except Exception as e:
+            logger.error(f"内容处理失败: {str(e)}")
+            logger.debug(traceback.format_exc())
+            return {
+                'success': False,
+                'error': str(e),
+                'data': content
+            }
+            
+    async def health_check(self) -> bool:
+        """健康检查
+        
+        Returns:
+            bool: 是否健康
+        """
+        try:
+            # 检查各个组件
+            components = [
+                self.preprocessor,
+                self.classifier,
+                self.distributor,
+                self.storage
+            ]
+            
+            for component in components:
+                if component and not await component.health_check():
+                    return False
+                    
             return True
-        except ValueError:
+            
+        except Exception as e:
+            logger.error(f"健康检查失败: {str(e)}")
             return False
-    
-    async def run(self, config: Dict[str, Any]) -> int:
-        """
-        运行系统
-        
-        Args:
-            config: 全局配置
             
-        Returns:
-            退出代码
-        """
-        logger.info("Initializing system...")
-        if not await self.initialize_modules(config):
-            logger.error("Some modules failed to initialize")
-            return 1
-        
-        logger.info("Starting modules...")
-        if not await self.start_modules():
-            logger.error("Some modules failed to start")
-            await self.stop_modules()
-            return 1
-        
-        self.running = True
-        logger.info("System is running")
-        
-        # 添加健康检查任务
-        health_check_task = asyncio.create_task(self._health_check_loop())
-        self.tasks.append(health_check_task)
-        
-        # 等待退出信号
+    async def stop(self):
+        """停止运行时"""
         try:
-            while self.running:
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            logger.info("Received cancellation signal")
-            self.running = False
-        finally:
-            logger.info("Stopping modules...")
-            await self.stop_modules()
+            # 停止各个组件
+            components = [
+                self.preprocessor,
+                self.classifier,
+                self.distributor,
+                self.storage
+            ]
             
-            # 取消所有任务
-            for task in self.tasks:
-                task.cancel()
-            
-            logger.info("System stopped")
-        
-        return 0
-    
-    async def _health_check_loop(self) -> None:
-        """定期执行模块健康检查"""
-        while self.running:
-            for module_id, module in self.modules.items():
+            for component in components:
+                if component:
+                    await component.stop()
+                    
+            # 停止健康检查
+            if self._health_check_task:
+                self._health_check_task.cancel()
                 try:
-                    if module.state == ModuleState.RUNNING:
-                        healthy = await module.health_check()
-                        if not healthy:
-                            logger.warning(f"Module '{module_id}' health check failed")
-                            # 可以在这里添加自动重启逻辑
-                except Exception as e:
-                    logger.error(f"Module '{module_id}' health check error: {str(e)}")
+                    await self._health_check_task
+                except asyncio.CancelledError:
+                    pass
+                self._health_check_task = None
+                
+            logger.info("运行时已停止")
             
-            await asyncio.sleep(30)  # 每30秒检查一次 
+        except Exception as e:
+            logger.error(f"停止运行时失败: {str(e)}")
+            logger.debug(traceback.format_exc())
+            
+    async def _health_check_loop(self):
+        """健康检查循环"""
+        while True:
+            try:
+                # 检查系统状态
+                self._is_healthy = await self._check_health()
+                
+                # 等待下一次检查
+                await asyncio.sleep(self.health_check_interval)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"健康检查失败: {str(e)}")
+                self._is_healthy = False
+                await asyncio.sleep(1)  # 避免过快重试
+                
+    async def _check_health(self) -> bool:
+        """检查系统健康状态
+        
+        Returns:
+            bool: 是否健康
+        """
+        try:
+            # 检查系统资源
+            if not self._check_resources():
+                return False
+                
+            # 检查网络连接
+            if not await self._check_network():
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"健康检查异常: {str(e)}")
+            return False
+            
+    def _check_resources(self) -> bool:
+        """检查系统资源
+        
+        Returns:
+            bool: 资源是否充足
+        """
+        # TODO: 实现资源检查
+        return True
+        
+    async def _check_network(self) -> bool:
+        """检查网络连接
+        
+        Returns:
+            bool: 网络是否正常
+        """
+        # TODO: 实现网络检查
+        return True
+        
+    @property
+    def is_healthy(self) -> bool:
+        """获取健康状态
+        
+        Returns:
+            bool: 是否健康
+        """
+        return self._is_healthy
+        
+    def get_stats(self) -> Dict[str, Any]:
+        """获取运行时统计信息
+        
+        Returns:
+            Dict[str, Any]: 统计信息
+        """
+        return {
+            'start_time': self.start_time.isoformat(),
+            'uptime': (datetime.now() - self.start_time).total_seconds(),
+            'is_healthy': self._is_healthy
+        } 

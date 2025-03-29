@@ -3,7 +3,110 @@ Base interface for data source adapters
 """
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Set, Callable, Awaitable
+from datetime import datetime
 
+
+class BaseAdapter(ABC):
+    """基础适配器接口"""
+    
+    def __init__(self):
+        """初始化适配器"""
+        self.source_type = self.get_source_type()
+        self.initialized = False
+        self.message_callback = None
+    
+    @abstractmethod
+    def get_source_type(self) -> str:
+        """获取数据源类型"""
+        pass
+    
+    @abstractmethod
+    async def initialize(self, message_callback: Callable[[Dict[str, Any]], None]) -> bool:
+        """初始化适配器
+        
+        Args:
+            message_callback: 收到新消息时的回调函数
+            
+        Returns:
+            bool: 初始化是否成功
+        """
+        pass
+    
+    @abstractmethod
+    async def start(self) -> bool:
+        """启动适配器
+        
+        Returns:
+            bool: 启动是否成功
+        """
+        pass
+    
+    @abstractmethod
+    async def stop(self) -> None:
+        """停止适配器"""
+        pass
+    
+    @abstractmethod
+    async def close(self) -> None:
+        """关闭适配器"""
+        pass
+    
+    @abstractmethod
+    async def get_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取消息
+        
+        Args:
+            limit: 获取消息的最大数量
+            
+        Returns:
+            List[Dict]: 消息列表
+        """
+        pass
+    
+    def _create_message_data(self, 
+                           content: str,
+                           metadata: Dict[str, Any],
+                           urls: List[str] = None,
+                           errors: List[str] = None) -> Dict[str, Any]:
+        """创建标准消息数据格式
+        
+        Args:
+            content: 消息内容
+            metadata: 元数据
+            urls: URL列表
+            errors: 错误信息列表
+            
+        Returns:
+            Dict: 标准消息数据
+        """
+        return {
+            'success': True,
+            'content': content,
+            'metadata': metadata,
+            'source': self.source_type,
+            'timestamp': datetime.now(),
+            'urls': urls or [],
+            'errors': errors or []
+        }
+    
+    def _create_error_data(self, error: str) -> Dict[str, Any]:
+        """创建错误数据格式
+        
+        Args:
+            error: 错误信息
+            
+        Returns:
+            Dict: 错误数据
+        """
+        return {
+            'success': False,
+            'content': '',
+            'metadata': {},
+            'source': self.source_type,
+            'timestamp': datetime.now(),
+            'urls': [],
+            'errors': [error]
+        }
 
 class DataSourceAdapter(ABC):
     """Base class for all data source adapters"""

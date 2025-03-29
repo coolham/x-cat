@@ -11,6 +11,7 @@ X-Cat采用模块化设计，主要包括以下组件：
 3. **存储系统**：使用SQLite存储消息和分析结果
 4. **分析器**：提供内容分析功能，包括AI驱动的分类和摘要
 5. **处理器**：处理和转换原始数据
+6. **浏览器模拟**：使用 Playwright 获取动态网页内容
 
 ## 当前功能
 
@@ -20,6 +21,7 @@ X-Cat采用模块化设计，主要包括以下组件：
 - ✅ AI内容分析（使用OpenAI、OpenRouter或DeepSeek）
 - ✅ 网页内容提取和处理
 - ✅ 代理服务器支持
+- ✅ 浏览器模拟（支持动态内容获取）
 
 ## 内容分析器功能
 
@@ -32,6 +34,7 @@ X-Cat 的内容分析器模块提供强大的内容理解和分类能力:
 - **摘要生成**：为长内容生成简洁的摘要
 - **网页内容处理**：自动提取和分析消息中包含的URL内容
 - **多语言支持**：支持多种语言的内容分析
+- **动态内容获取**：使用 Playwright 获取需要 JavaScript 渲染的网页内容
 
 您可以在 [examples/analyze_content.py](examples/analyze_content.py) 中查看示例用法。
 
@@ -56,7 +59,16 @@ X-Cat 的内容分析器模块提供强大的内容理解和分类能力:
    pip install -r requirements.txt
    ```
 
-3. 配置系统：
+3. 安装 Playwright：
+   ```
+   # 安装 Playwright
+   pip install playwright
+   
+   # 安装浏览器
+   playwright install chromium
+   ```
+
+4. 配置系统：
    - 复制`.env.example`为`.env`
    - 编辑`.env`文件，设置必要的配置（如Telegram令牌、API密钥等）
 
@@ -88,7 +100,35 @@ DEEPSEEK_API_KEY=your_deepseek_api_key
 # 代理服务器配置（可选）
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
+
+# 浏览器模拟配置
+PREPROCESSOR_USE_PROXY=true
+BROWSER_TIMEOUT=30
 ```
+
+### 浏览器模拟配置
+
+系统使用 Playwright 进行浏览器模拟，以获取动态内容（如 Twitter/X 等网站）。在 `config.json` 中可以配置浏览器相关参数：
+
+```json
+{
+    "browser": {
+        "headless": true,
+        "timeout": 30,
+        "viewport": {
+            "width": 1920,
+            "height": 1080
+        }
+    }
+}
+```
+
+主要特点：
+1. 无头模式运行
+2. 支持代理配置
+3. 自动等待页面加载
+4. 支持 JavaScript 执行
+5. 模拟真实浏览器行为
 
 ### AI提供商配置
 
@@ -113,6 +153,7 @@ HTTPS_PROXY=http://your_proxy_server:port
 OPENAI_USE_PROXY=true
 OPENROUTER_USE_PROXY=true
 DEEPSEEK_USE_PROXY=true
+PREPROCESSOR_USE_PROXY=true
 ```
 
 ## 使用方法
@@ -133,6 +174,25 @@ python tests/test_ai_client.py
 
 将已创建的Telegram机器人添加到您想要监控的频道中，并确保它具有读取消息的权限。
 
+## 常见问题
+
+### Playwright 相关
+
+1. 安装失败
+   - 确保系统已安装 Python 3.8 或更高版本
+   - 检查网络连接
+   - 尝试使用国内镜像源
+
+2. 代理连接问题
+   - 检查代理服务器是否正常运行
+   - 验证代理配置是否正确
+   - 尝试不同的代理协议（HTTP/SOCKS5）
+
+3. 内容获取失败
+   - 检查网络连接
+   - 验证 URL 是否可访问
+   - 查看日志文件了解详细错误信息
+
 ## 开发计划
 
 我们计划进一步扩展系统功能，包括：
@@ -141,6 +201,7 @@ python tests/test_ai_client.py
 2. 数据可视化界面
 3. 更多信息源适配器
 4. 用户定制分析规则
+5. 更多浏览器模拟功能（如截图、PDF导出等）
 
 ## 贡献指南
 
