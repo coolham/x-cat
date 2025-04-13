@@ -39,29 +39,37 @@ class ContentPreprocessor(BaseProcessor):
         Args:
             config: 配置信息
         """
+        logger.info("开始初始化内容预处理器")
         super().__init__(config)
         
         # 从配置中获取预处理器相关的配置
         preprocessor_config = config.get("preprocessor", {}) if config else {}
+        logger.info(f"预处理器配置: {preprocessor_config}")
         
         # 初始化配置
         self.config = PreprocessorConfig.from_dict(preprocessor_config)
+        logger.info(f"预处理器配置对象创建完成: {self.config}")
         
         http_proxy = os.environ.get('HTTP_PROXY', '')
         https_proxy = os.environ.get('HTTPS_PROXY', '')
-        logger.info(f"HTTP_PROXY={http_proxy}, HTTPS_PROXY={https_proxy}")
+        logger.info(f"当前代理设置: HTTP_PROXY={http_proxy}, HTTPS_PROXY={https_proxy}")
 
         # 初始化状态管理器
         self.state_manager = StateManager()
+        logger.info("状态管理器初始化完成")
         
         # 基础配置
         self.clean_html = self.config.remove_html
         self.remove_extra_spaces = self.config.remove_extra_spaces
         self.normalize_whitespace = True  # 默认启用
         self.max_length = self.config.max_content_length
+        logger.info(f"基础配置: clean_html={self.clean_html}, remove_extra_spaces={self.remove_extra_spaces}, max_length={self.max_length}")
         
         # 初始化组件
+        logger.info("开始初始化预处理器组件")
         self.url_extractor = URLExtractor()
+        logger.info("URL提取器初始化完成")
+        
         self.content_fetcher = ContentFetcher(
             proxy_url=self.config.proxy_url,
             timeout=self.config.timeout,
@@ -69,10 +77,15 @@ class ContentPreprocessor(BaseProcessor):
             user_agent=self.config.user_agent,
             max_retries=self.config.max_retries
         )
-        self.content_cleaner = ContentCleaner()
-        self.command_processor = CommandProcessor()
+        logger.info("内容获取器初始化完成")
         
-        logger.info(f"内容预处理器初始化完成，配置: {self.config}")
+        self.content_cleaner = ContentCleaner()
+        logger.info("内容清理器初始化完成")
+        
+        self.command_processor = CommandProcessor()
+        logger.info("命令处理器初始化完成")
+        
+        logger.info("内容预处理器初始化完成")
 
     def initialize(self) -> bool:
         """Initialize the preprocessor
@@ -81,29 +94,35 @@ class ContentPreprocessor(BaseProcessor):
             bool: Whether initialization was successful
         """
         try:
-            logger.info("Initializing content preprocessor")
+            logger.info("开始初始化内容预处理器")
             
             # 验证配置
             if not self.config.validate():
+                logger.error("预处理器配置验证失败")
                 return False
+            logger.info("预处理器配置验证通过")
                 
             # 初始化命令处理器
             if hasattr(self.command_processor, 'initialize'):
+                logger.info("开始初始化命令处理器")
                 asyncio.run(self.command_processor.initialize())
+                logger.info("命令处理器初始化完成")
                 
             self.state_manager.start_processing()
             super().initialize()
+            logger.info("内容预处理器初始化完成")
             return True
         except Exception as e:
-            logger.error(f"Error initializing content preprocessor: {str(e)}")
+            logger.error(f"内容预处理器初始化失败: {str(e)}")
             self.state_manager.update_progress("initialize", False, str(e))
             return False
         
     def cleanup(self) -> None:
         """Cleanup preprocessor resources"""
-        logger.info("Cleaning up content preprocessor")
+        logger.info("开始清理内容预处理器资源")
         self.state_manager.complete_processing(True)
         super().cleanup()
+        logger.info("内容预处理器资源清理完成")
         
     @task
     def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,8 +136,8 @@ class ContentPreprocessor(BaseProcessor):
             处理后的数据
         """
         try:
-            self.state_manager.update_progress("process")
             logger.info(f"开始预处理数据: {data}")
+            self.state_manager.update_progress("process")
             
             # 复制原始数据
             processed_data = data.copy()
@@ -131,35 +150,45 @@ class ContentPreprocessor(BaseProcessor):
                 return processed_data
             
             # 确定内容类型
+            logger.info("开始确定内容类型")
             content_type = self._determine_content_type(content, processed_data.get("metadata", {}))
+            logger.info(f"内容类型确定为: {content_type}")
             self.state_manager.update_progress(f"determine_type_{content_type}")
             
             # 根据内容类型处理
             if content_type == "url":
+                logger.info(f"开始处理URL内容: {content}")
                 result = asyncio.run(self._handle_url(content, processed_data))
                 if result["success"]:
                     processed_data = result["content"]
+                    logger.info("URL内容处理成功")
                 else:
                     logger.error(f"URL处理失败: {result['errors']}")
                     self.state_manager.update_progress("process_url", False, result["errors"][0])
             elif content_type == "command":
+                logger.info(f"开始处理命令: {content}")
                 result = self._handle_command(content, processed_data)
                 if result["success"]:
                     processed_data = result["content"]
+                    logger.info("命令处理成功")
                 else:
                     logger.error(f"命令处理失败: {result['errors']}")
                     self.state_manager.update_progress("process_command", False, result["errors"][0])
             elif content_type == "media":
+                logger.info("开始处理媒体内容")
                 result = self._handle_media(processed_data)
                 if result["success"]:
                     processed_data = result["content"]
+                    logger.info("媒体内容处理成功")
                 else:
                     logger.error(f"媒体处理失败: {result['errors']}")
                     self.state_manager.update_progress("process_media", False, result["errors"][0])
             else:
                 # 处理普通文本
+                logger.info("开始处理普通文本内容")
                 processed_content = self._process_text(content)
                 processed_data["content"] = processed_content
+                logger.info("普通文本处理完成")
                 self.state_manager.update_progress("process_text")
             
             # 添加预处理标记
@@ -194,41 +223,54 @@ class ContentPreprocessor(BaseProcessor):
         Returns:
             处理后的文本
         """
+        logger.info("开始处理文本内容")
         # 检查文本中是否包含URL
         urls = self.url_extractor.extract_urls(text)
+        logger.info(f"从文本中提取到 {len(urls)} 个URL: {urls}")
         
         if urls:
             logger.info(f"文本中包含 {len(urls)} 个URL，将获取URL内容并组合")
             # 获取URL内容
             url_contents = asyncio.run(self._fetch_url_contents(urls))
+            logger.info(f"URL内容获取完成，成功获取 {sum(1 for c in url_contents if c['success'])} 个URL的内容")
             
             # 组合原始文本和URL内容
             combined_text = text
             for i, url_content in enumerate(url_contents):
                 if url_content["success"]:
                     combined_text += f"\n\n--- URL内容 ({urls[i]}) ---\n{url_content['content']}"
+                    logger.info(f"成功组合URL内容: {urls[i]}")
                 else:
                     combined_text += f"\n\n--- URL获取失败 ({urls[i]}) ---\n{url_content['error']}"
+                    logger.warning(f"URL内容获取失败: {urls[i]} - {url_content['error']}")
             
             text = combined_text
         
         # 清理HTML标签
         if self.clean_html:
+            logger.info("开始清理HTML标签")
             text = self._clean_html(text)
+            logger.info("HTML标签清理完成")
         
         # 移除多余空格
         if self.remove_extra_spaces:
+            logger.info("开始移除多余空格")
             text = self._remove_extra_spaces(text)
+            logger.info("多余空格移除完成")
         
         # 规范化空白字符
         if self.normalize_whitespace:
+            logger.info("开始规范化空白字符")
             text = self._normalize_whitespace(text)
+            logger.info("空白字符规范化完成")
         
         # 截断过长的内容
         if len(text) > self.max_length:
+            logger.warning(f"内容长度超过限制 ({len(text)} > {self.max_length})，将进行截断")
             text = text[:self.max_length] + "..."
-            logger.warning(f"内容已截断至 {self.max_length} 字符")
+            logger.info(f"内容已截断至 {self.max_length} 字符")
         
+        logger.info("文本处理完成")
         return text
     
     async def _fetch_url_contents(self, urls: List[str]) -> List[Dict[str, Any]]:
@@ -242,7 +284,11 @@ class ContentPreprocessor(BaseProcessor):
             URL内容列表
         """
         try:
-            return await self.content_fetcher.fetch(urls)
+            logger.info(f"开始获取URL内容: {urls}")
+            results = await self.content_fetcher.fetch(urls)
+            success_count = sum(1 for r in results if r['success'])
+            logger.info(f"URL内容获取完成: 总数={len(results)}, 成功={success_count}, 失败={len(results)-success_count}")
+            return results
         except Exception as e:
             logger.error(f"获取URL内容失败: {str(e)}")
             return [{"success": False, "error": str(e)} for _ in urls]
@@ -258,13 +304,18 @@ class ContentPreprocessor(BaseProcessor):
         Returns:
             str: 内容类型
         """
+        logger.info("开始确定内容类型")
         if text.startswith(self.config.command_prefix):
+            logger.info("内容类型确定为: command")
             return "command"
         elif self.url_extractor.is_valid_url(text):
+            logger.info("内容类型确定为: url")
             return "url"
         elif self._has_media(metadata):
+            logger.info("内容类型确定为: media")
             return "media"
         else:
+            logger.info("内容类型确定为: text")
             return "text"
     
     async def _handle_url(self, url: str, raw_content: Dict) -> Dict:
@@ -461,6 +512,7 @@ class ContentPreprocessor(BaseProcessor):
         Returns:
             清理后的文本
         """
+        logger.info("开始清理HTML标签")
         # 移除HTML标签
         text = re.sub(r'<[^>]+>', '', text)
         # 解码HTML实体
@@ -470,6 +522,7 @@ class ContentPreprocessor(BaseProcessor):
         text = text.replace('&amp;', '&')
         text = text.replace('&quot;', '"')
         text = text.replace('&apos;', "'")
+        logger.info("HTML标签清理完成")
         return text
     
     def _remove_extra_spaces(self, text: str) -> str:
@@ -482,8 +535,10 @@ class ContentPreprocessor(BaseProcessor):
         Returns:
             处理后的文本
         """
+        logger.info("开始移除多余空格")
         # 移除连续的空格
         text = re.sub(r'\s+', ' ', text)
+        logger.info("多余空格移除完成")
         return text
     
     def _normalize_whitespace(self, text: str) -> str:
@@ -496,10 +551,12 @@ class ContentPreprocessor(BaseProcessor):
         Returns:
             处理后的文本
         """
+        logger.info("开始规范化空白字符")
         # 将制表符替换为空格
         text = text.replace('\t', ' ')
         # 将换行符替换为空格
         text = text.replace('\n', ' ')
         # 移除连续的空格
         text = re.sub(r'\s+', ' ', text)
+        logger.info("空白字符规范化完成")
         return text 

@@ -299,7 +299,7 @@ class PrefectPipeline:
                 # "feishu_bitable_result": feishu_bitable_result
             }
             
-            logger.info(f"数据处理完成: {result}")
+            logger.info(f"data_pipeline : {result}")
             return result
 
         self.flow = data_pipeline
@@ -338,7 +338,7 @@ class PrefectPipeline:
             # 使用 Prefect 流直接运行
             result = await asyncio.to_thread(self.flow, data_dict)
             
-            logger.info(f"数据处理完成: {result}")
+            logger.info(f"pipe process数据处理完成: {result}")
             return result
             
         except Exception as e:

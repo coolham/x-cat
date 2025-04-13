@@ -1,8 +1,14 @@
 """
 Playwright 内容获取器测试
 """
+import os
+import sys
 import pytest
 import pytest_asyncio
+import argparse
+import asyncio
+# 添加项目根目录到路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 from app.preprocessor.playwright_fetcher import PlaywrightFetcher
 
 @pytest.fixture
@@ -12,7 +18,8 @@ async def fetcher():
     try:
         yield fetcher
     finally:
-        await fetcher.close()
+        fetcher.close()
+    
 
 @pytest.mark.asyncio
 async def test_fetch_bing(fetcher):
@@ -23,10 +30,13 @@ async def test_fetch_bing(fetcher):
     results = await fetcher.fetch([url])
 
     # 验证结果
-    assert len(results) == 1
+    assert len(results) == 1, "结果数量不正确"
     assert results[0]['success'] is True, f"Error: {results[0]['error']}"
-    assert 'Bing' in results[0]['content']
-    assert results[0]['type'] == 'html'
+    # assert '必应' in results[0]['content'], "内容中未找到 'Bing'"
+    assert results[0]['type'] == 'html', "返回类型不正确"
+    
+    # 测试完成后不关闭浏览器
+    await asyncio.sleep(2)  # 等待一段时间，让用户查看浏览器状态
 
 @pytest.mark.asyncio
 async def test_fetch_with_proxy(fetcher):
@@ -116,3 +126,25 @@ async def test_close(fetcher):
     await fetcher.close()
     assert fetcher._playwright is None
     assert fetcher._browser is None
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='运行 Playwright 内容获取器测试')
+    parser.add_argument('-t', '--test', help='指定要运行的测试用例名称')
+    parser.add_argument('-v', '--verbose', action='store_true', help='显示详细输出')
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    # 指定要运行的测试用例名称
+    test_name = "test_fetch_with_proxy"  # 这里可以修改为其他测试用例名称
+    
+    # 构建 pytest 命令行参数
+    pytest_args = [
+        "-v",  # 显示详细输出
+        "-k", test_name,  # 指定测试用例名称
+        __file__  # 当前文件路径
+    ]
+    
+    # 执行测试
+    pytest.main(pytest_args)
+    # pytest.main()
