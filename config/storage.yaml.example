@@ -1,0 +1,35 @@
+# Storage Module Configuration Example
+# Copy this file to storage.yaml and modify as needed
+
+# Database settings
+db_type: sqlite  # sqlite, mysql, postgresql
+db_path: data/storage.db
+connection_timeout: 30
+pool_size: 5
+
+# Backup settings
+backup:
+  enabled: true
+  dir: data/backups
+  interval: 86400  # 24 hours in seconds
+  max_backups: 7
+  compress: true
+
+# Cache settings
+cache:
+  enabled: true
+  type: memory  # memory, redis
+  ttl: 3600  # 1 hour in seconds
+  max_size: 1000  # Maximum number of cached items
+
+# Data retention
+retention:
+  enabled: true
+  max_age: 2592000  # 30 days in seconds
+  cleanup_interval: 86400  # 24 hours in seconds
+
+# Indexing
+indexing:
+  enabled: true
+  rebuild_interval: 604800  # 7 days in seconds
+  full_text_search: true 

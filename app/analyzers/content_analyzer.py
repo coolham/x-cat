@@ -194,4 +194,14 @@ class ContentAnalyzer:
     
     async def close(self):
         """关闭资源"""
-        await self.ai_client.close() 
+        await self.ai_client.close()
+
+    async def cleanup(self):
+        """清理资源"""
+        try:
+            if hasattr(self.ai_client, 'cleanup'):
+                await self.ai_client.cleanup()
+            logger.info("内容分析器资源已清理")
+        except Exception as e:
+            logger.error(f"清理内容分析器资源时出错: {str(e)}")
+            logger.debug(traceback.format_exc()) 

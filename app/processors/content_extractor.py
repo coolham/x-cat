@@ -1,234 +1,196 @@
 """
-内容提取器模块
-负责从URL中提取网页内容
+Content extractor module
 """
-import re
-import asyncio
-from typing import Dict, Any, List, Optional, Tuple, Union
-import traceback
-
-import httpx
+from typing import Any, Dict, List, Optional
 from loguru import logger
-from bs4 import BeautifulSoup
+from prefect import task
+from .base_processor import BaseProcessor
+import re
+import json
 
-class ContentExtractor:
-    """
-    内容提取器
-    负责从URL中提取网页内容、清理和格式化
+class ContentExtractor(BaseProcessor):
+    """Content extractor that extracts content from messages"""
     
-    属性:
-        proxy_url: 代理服务器URL
-        timeout: 请求超时时间
-        user_agent: 请求头User-Agent
-        max_content_length: 最大内容长度
-    """
-    
-    def __init__(
-        self, 
-        proxy_url: Optional[str] = None,
-        timeout: float = 30.0,
-        user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        max_content_length: int = 100000
-    ):
+    def __init__(self, config: Dict[str, Any] = None):
         """
-        初始化内容提取器
+        Initialize the extractor
         
         Args:
-            proxy_url: 代理服务器URL (可选)
-            timeout: 请求超时时间，默认30秒
-            user_agent: 请求头User-Agent
-            max_content_length: 最大内容长度，防止提取过大内容
+            config: Extractor configuration
         """
-        self.proxy_url = proxy_url
-        self.timeout = timeout
-        self.user_agent = user_agent
-        self.max_content_length = max_content_length
+        super().__init__(config or {})
+        self.extract_keywords = self.config.get("extract_keywords", True)
+        self.extract_entities = self.config.get("extract_entities", True)
+        self.extract_summary = self.config.get("extract_summary", True)
+        self.keyword_count = self.config.get("keyword_count", 10)
+        logger.info(f"内容提取器初始化完成，配置: {self.config}")
         
-        # 创建HTTP客户端
-        proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
-        self.client = httpx.AsyncClient(
-            proxies=proxies, 
-            timeout=timeout,
-            follow_redirects=True
-        )
+    def initialize(self) -> bool:
+        """Initialize the extractor
         
-        logger.debug(f"内容提取器初始化成功: proxy={proxy_url is not None}")
-    
-    async def extract_from_url(self, url: str) -> Tuple[bool, Dict[str, Any]]:
-        """
-        从URL提取内容
-        
-        Args:
-            url: 目标URL
-            
         Returns:
-            (成功标志, 提取结果或错误信息)
-            提取结果包含：
-            - title: 网页标题
-            - content: 正文内容
-            - url: 最终URL（考虑重定向）
-            - metadata: 元数据字典
+            bool: Whether initialization was successful
         """
         try:
-            # 准备请求头
-            headers = {
-                "User-Agent": self.user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
-            }
-            
-            # 发送请求
-            logger.debug(f"正在请求URL: {url}")
-            response = await self.client.get(url, headers=headers)
-            
-            # 检查状态码
-            if response.status_code != 200:
-                error_msg = f"请求失败: HTTP {response.status_code}"
-                logger.error(error_msg)
-                return False, {"error": error_msg, "url": url}
-            
-            # 限制内容长度
-            content = response.text[:self.max_content_length]
-            
-            # 解析HTML
-            result = self._parse_html(content, response.url)
-            result["url"] = str(response.url)  # 使用最终URL（考虑重定向）
-            
-            return True, result
-            
-        except httpx.TimeoutException:
-            error_msg = f"请求超时: {url}"
-            logger.error(error_msg)
-            return False, {"error": error_msg, "url": url}
-            
-        except httpx.RequestError as e:
-            error_msg = f"请求错误: {str(e)}"
-            logger.error(error_msg)
-            return False, {"error": error_msg, "url": url}
-            
+            logger.info("Initializing content extractor")
+            super().initialize()
+            return True
         except Exception as e:
-            error_msg = f"提取内容时出错: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(traceback.format_exc())
-            return False, {"error": error_msg, "url": url}
-    
-    def _parse_html(self, html_content: str, url: str) -> Dict[str, Any]:
+            logger.error(f"Error initializing content extractor: {str(e)}")
+            return False
+        
+    def cleanup(self) -> None:
+        """Cleanup extractor resources"""
+        logger.info("Cleaning up content extractor")
+        super().cleanup()
+        
+    @task
+    def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        解析HTML内容
+        Extract content from message
         
         Args:
-            html_content: HTML内容
-            url: 页面URL
+            data: 预处理后的数据
             
         Returns:
-            解析结果字典
+            提取后的数据
         """
-        result = {
-            "title": "",
-            "content": "",
-            "url": str(url),
-            "metadata": {}
+        logger.info(f"开始提取内容: {data}")
+        
+        if not self._initialized:
+            self.initialize()
+            
+        try:
+            # 复制原始数据
+            extracted_data = data.copy()
+            
+            # 获取内容
+            content = extracted_data.get("content", "")
+            if not content:
+                logger.warning("数据中没有内容字段")
+                return extracted_data
+            
+            # 提取关键词
+            if self.extract_keywords:
+                keywords = self._extract_keywords(content)
+                extracted_data["keywords"] = keywords
+            
+            # 提取实体
+            if self.extract_entities:
+                entities = self._extract_entities(content)
+                extracted_data["entities"] = entities
+            
+            # 提取摘要
+            if self.extract_summary:
+                summary = self._extract_summary(content)
+                extracted_data["summary"] = summary
+            
+            # 添加提取标记
+            extracted_data["extracted"] = True
+            extracted_data["extraction_info"] = {
+                "extract_keywords": self.extract_keywords,
+                "extract_entities": self.extract_entities,
+                "extract_summary": self.extract_summary,
+                "keyword_count": self.keyword_count
+            }
+            
+            logger.debug(f"Content extracted: {extracted_data}")
+            return extracted_data
+            
+        except Exception as e:
+            logger.error(f"Error extracting content: {str(e)}")
+            raise
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """
+        提取关键词
+        
+        Args:
+            text: 文本内容
+            
+        Returns:
+            关键词列表
+        """
+        # 简单的关键词提取算法
+        # 1. 分词
+        words = re.findall(r'\w+', text)
+        
+        # 2. 统计词频
+        word_freq = {}
+        for word in words:
+            if len(word) > 1:  # 忽略单字符
+                word_freq[word] = word_freq.get(word, 0) + 1
+        
+        # 3. 按词频排序
+        sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+        
+        # 4. 返回前N个关键词
+        return [word for word, _ in sorted_words[:self.keyword_count]]
+    
+    def _extract_entities(self, text: str) -> Dict[str, List[str]]:
+        """
+        提取实体
+        
+        Args:
+            text: 文本内容
+            
+        Returns:
+            实体字典
+        """
+        # 简单的实体提取算法
+        entities = {
+            "person": [],
+            "location": [],
+            "organization": [],
+            "date": [],
+            "number": []
         }
         
-        try:
-            # 使用BeautifulSoup解析
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # 提取标题
-            if soup.title:
-                result["title"] = soup.title.string.strip() if soup.title.string else ""
-            
-            # 提取元数据
-            meta_tags = {
-                "description": "",
-                "keywords": "",
-                "author": "",
-                "og:title": "",
-                "og:description": "",
-                "og:image": "",
-                "twitter:title": "",
-                "twitter:description": "",
-                "twitter:image": ""
-            }
-            
-            for meta in soup.find_all("meta"):
-                name = meta.get("name", "").lower()
-                property = meta.get("property", "").lower()
-                content = meta.get("content", "")
-                
-                if name in meta_tags:
-                    meta_tags[name] = content
-                elif property in meta_tags:
-                    meta_tags[property] = content
-            
-            result["metadata"] = meta_tags
-            
-            # 提取正文内容
-            # 首先尝试找到主要内容区域
-            main_content = None
-            
-            # 检查常见的内容容器
-            for container in ["article", "main", ".post-content", ".article-content", "#content", ".content"]:
-                if container.startswith(".") or container.startswith("#"):
-                    elements = soup.select(container)
-                else:
-                    elements = soup.find_all(container)
-                
-                if elements:
-                    main_content = elements[0]
-                    break
-            
-            # 如果没有找到明确的内容容器，则使用body
-            if not main_content:
-                main_content = soup.body
-            
-            # 提取文本内容
-            if main_content:
-                # 移除脚本、样式等非内容元素
-                for element in main_content.find_all(["script", "style", "iframe", "nav", "footer", "header"]):
-                    element.decompose()
-                
-                # 获取所有段落
-                paragraphs = main_content.find_all("p")
-                if paragraphs:
-                    content = "\n\n".join([p.get_text().strip() for p in paragraphs if p.get_text().strip()])
-                    result["content"] = content
-                else:
-                    # 如果没有找到段落，则使用所有文本
-                    result["content"] = main_content.get_text(" ", strip=True)
-            
-            # 简单的内容清理
-            result["content"] = re.sub(r'\s+', ' ', result["content"]).strip()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"解析HTML时出错: {str(e)}")
-            logger.debug(traceback.format_exc())
-            result["content"] = "解析HTML时出错"
-            return result
+        # 提取日期
+        date_pattern = r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?'
+        entities["date"] = re.findall(date_pattern, text)
+        
+        # 提取数字
+        number_pattern = r'\d+(?:\.\d+)?'
+        entities["number"] = re.findall(number_pattern, text)
+        
+        # 提取人名（简单规则）
+        person_pattern = r'[赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻水云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅卞齐康伍余元卜顾孟平' \
+                         r'[一-龥]{1,2}'
+        entities["person"] = re.findall(person_pattern, text)
+        
+        # 提取地名（简单规则）
+        location_pattern = r'[北京上海广州深圳天津重庆武汉成都杭州南京西安长沙济南青岛大连沈阳哈尔滨长春福州厦门宁波合肥南昌贵阳昆明兰州西宁银川乌鲁木齐拉萨]' \
+                          r'[市省区县]?'
+        entities["location"] = re.findall(location_pattern, text)
+        
+        # 提取组织名（简单规则）
+        org_pattern = r'[公司企业集团银行医院学校政府]'
+        org_matches = re.findall(org_pattern, text)
+        entities["organization"] = [f"{org}公司" for org in org_matches]
+        
+        return entities
     
-    def extract_urls_from_text(self, text: str) -> List[str]:
+    def _extract_summary(self, text: str) -> str:
         """
-        从文本中提取URL
+        提取摘要
         
         Args:
-            text: 输入文本
+            text: 文本内容
             
         Returns:
-            URL列表
+            摘要
         """
-        # URL正则表达式模式
-        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[^\s]*)?'
+        # 简单的摘要提取算法
+        # 1. 分段
+        paragraphs = text.split('\n')
         
-        # 查找所有匹配
-        urls = re.findall(url_pattern, text)
+        # 2. 选择第一段作为摘要
+        if paragraphs:
+            summary = paragraphs[0]
+            # 截断过长的摘要
+            if len(summary) > 200:
+                summary = summary[:200] + "..."
+            return summary
         
-        # 去重
-        unique_urls = list(set(urls))
-        
-        return unique_urls
-    
-    async def close(self):
-        """关闭HTTP客户端"""
-        await self.client.aclose() 
+        return "" 

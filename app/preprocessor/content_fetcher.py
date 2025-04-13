@@ -18,6 +18,11 @@ class ContentFetcher:
     """
     内容获取器工厂类
     根据URL类型选择合适的获取器
+    
+    处理规则:
+    1. 对于图片、视频或文件链接，不获取内容，直接返回原始URL
+    2. 对于Twitter等推文，使用Playwright机制获取内容
+    3. 对于常规内容，使用网络请求获取，如果不能直接访问，使用代理服务器
     """
     
     def __init__(
@@ -40,7 +45,8 @@ class ContentFetcher:
             user_agent: 自定义User-Agent
             max_retries: 最大重试次数
         """
-        self.proxy_url = proxy_url
+        # 优先使用传入的代理设置，如果没有则使用环境变量中的代理设置
+        self.proxy_url = proxy_url or os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
         self.timeout = timeout
         self.max_content_length = max_content_length
         self.max_retries = max_retries
@@ -89,16 +95,21 @@ class ContentFetcher:
             r'https?://(?:www\.)?x\.com/\w+/status/\d+'
         ]
         
-        logger.info(f"初始化内容获取器: timeout={timeout}s, max_content_length={max_content_length}")
+        # 媒体文件扩展名
+        self.media_extensions = [
+            # 图片
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
+            # 视频
+            '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm',
+            # 音频
+            '.mp3', '.wav', '.ogg', '.flac', '.aac',
+            # 文档
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.txt', '.rtf', '.csv', '.zip', '.rar', '.7z', '.tar', '.gz'
+        ]
         
-        # 确保环境变量也设置了代理
-        if self.proxy_url:
-            os.environ['HTTP_PROXY'] = self.proxy_url
-            os.environ['HTTPS_PROXY'] = self.proxy_url
-        else:
-            # 如果代理URL为空，清除环境变量中的代理设置
-            os.environ.pop('HTTP_PROXY', None)
-            os.environ.pop('HTTPS_PROXY', None)
+        logger.info(f"初始化内容获取器: timeout={timeout}s, max_content_length={max_content_length}")
+        logger.info(f"使用代理设置: {self.proxy_url}")
     
     async def _extract_twitter(self, url: str) -> Dict[str, Any]:
         """
@@ -170,6 +181,20 @@ class ContentFetcher:
                 return True
         return False
     
+    def _is_media_url(self, url: str) -> bool:
+        """
+        检查是否是媒体文件URL
+        
+        Args:
+            url: URL地址
+            
+        Returns:
+            bool: 是否是媒体文件URL
+        """
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        return any(path.endswith(ext) for ext in self.media_extensions)
+    
     def _clean_twitter_url(self, url: str) -> str:
         """
         清理Twitter/X URL，移除不必要的参数
@@ -196,11 +221,23 @@ class ContentFetcher:
         Returns:
             Optional[str]: 推文ID或None
         """
-        match = re.search(r'/status/(\d+)', url)
+        # 检查是否是Twitter相关域名
+        parsed = urlparse(url)
+        if parsed.netloc not in ["twitter.com", "www.twitter.com", "x.com", "www.x.com", "m.twitter.com", "m.x.com"]:
+            logger.debug(f"URL域名不属于Twitter: {url}")
+            return None
+
+        # 清理URL，移除查询参数和片段
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        
+        # 使用正则表达式提取推文ID
+        match = re.search(r'/status/(\d+)', clean_url)
         if match:
             tweet_id = match.group(1)
-            logger.debug(f"从URL提取推文ID: {url} -> {tweet_id}")
+            logger.debug(f"从URL提取推文ID: {clean_url} -> {tweet_id}")
             return tweet_id
+        
+        logger.debug(f"未能从URL提取推文ID: {clean_url}")
         return None
     
     def _log_content_preview(self, content: str, source: str, url: str):
@@ -226,6 +263,18 @@ class ContentFetcher:
         Returns:
             Dict[str, Any]: 获取结果
         """
+        # 检查是否是媒体文件URL
+        if self._is_media_url(url):
+            logger.info(f"检测到媒体文件URL，直接返回: {url}")
+            return {
+                'success': True,
+                'url': url,
+                'content': url,
+                'type': 'media',
+                'title': url,
+                'metadata': {'is_media': True, 'original_url': url}
+            }
+        
         # 1. 首先尝试使用 Twitter API
         if self._twitter_api_fetcher and self._is_twitter_url(url):
             clean_url = self._clean_twitter_url(url)
@@ -238,7 +287,16 @@ class ContentFetcher:
                     return result[0]
                 logger.warning(f"Twitter API 获取失败: {url} - {result[0].get('error', '未知错误')}")
         
-        # 2. 尝试使用 aiohttp
+        # 2. 如果是Twitter URL，使用Playwright
+        if self._is_twitter_url(url):
+            logger.debug(f"尝试使用 Playwright 获取Twitter内容: {url}")
+            result = await self._playwright_fetcher.fetch([url])
+            if result and result[0]['success']:
+                self._log_content_preview(result[0]['content'], "Playwright", url)
+                return result[0]
+            logger.warning(f"Playwright 获取Twitter内容失败: {url} - {result[0].get('error', '未知错误')}")
+        
+        # 3. 尝试使用 aiohttp
         logger.debug(f"尝试使用 aiohttp 获取: {url}")
         result = await self._aiohttp_fetcher.fetch([url])
         if result and result[0]['success']:
@@ -246,7 +304,7 @@ class ContentFetcher:
             return result[0]
         logger.warning(f"aiohttp 获取失败: {url} - {result[0].get('error', '未知错误')}")
         
-        # 3. 最后尝试使用 Playwright
+        # 4. 最后尝试使用 Playwright
         logger.debug(f"尝试使用 Playwright 获取: {url}")
         result = await self._playwright_fetcher.fetch([url])
         if result and result[0]['success']:
@@ -272,8 +330,12 @@ class ContentFetcher:
         # 确定获取方式
         fetch_methods = []
         for url in urls:
-            if self._twitter_api_fetcher and self._is_twitter_url(url):
+            if self._is_media_url(url):
+                fetch_methods.append("媒体文件(直接返回)")
+            elif self._twitter_api_fetcher and self._is_twitter_url(url):
                 fetch_methods.append("Twitter API")
+            elif self._is_twitter_url(url):
+                fetch_methods.append("Playwright (Twitter)")
             else:
                 fetch_methods.append("aiohttp/Playwright")
         
@@ -297,3 +359,37 @@ class ContentFetcher:
         if self._twitter_api_fetcher:
             await self._twitter_api_fetcher.close()
         logger.info("所有内容获取器已关闭")
+
+    async def _fetch_generic(self, url: str) -> Dict[str, Any]:
+        """
+        获取通用URL内容
+        
+        Args:
+            url: URL地址
+            
+        Returns:
+            Dict[str, Any]: 获取结果
+        """
+        # 首先尝试使用 aiohttp
+        logger.debug(f"尝试使用 aiohttp 获取通用内容: {url}")
+        result = await self._aiohttp_fetcher.fetch([url])
+        if result and result[0]['success']:
+            self._log_content_preview(result[0]['content'], "aiohttp", url)
+            return result[0]
+        
+        # 如果 aiohttp 失败，尝试使用 Playwright
+        logger.debug(f"尝试使用 Playwright 获取通用内容: {url}")
+        result = await self._playwright_fetcher.fetch([url])
+        if result and result[0]['success']:
+            self._log_content_preview(result[0]['content'], "Playwright", url)
+            return result[0]
+        
+        # 如果都失败，返回错误
+        logger.error(f"获取通用内容失败: {url}")
+        return {
+            'success': False,
+            'url': url,
+            'error': '获取内容失败',
+            'content': '',
+            'type': 'error'
+        }

@@ -1,0 +1,28 @@
+# Telegram Module Configuration Example
+# Copy this file to telegram.yaml and modify as needed
+
+# General settings
+enabled: true
+channel_id: "@your_channel_name"
+polling_interval: 60
+processed_messages_file: data/processed_messages.json
+
+# Proxy settings (optional)
+proxy:
+  enabled: false
+  url: "http://127.0.0.1:10808"
+
+# Message processing settings
+message:
+  max_length: 4096
+  truncate: true
+  save_media: false
+  media_dir: data/media
+
+# Category channels (optional)
+category_channels:
+  AI: "@ai_channel"
+  Python: "@python_channel"
+  电子设计: "@electronics_channel"
+  数字货币: "@crypto_channel"
+  其他: "@other_channel" 

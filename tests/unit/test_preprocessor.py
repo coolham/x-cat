@@ -8,7 +8,7 @@ import pytest_asyncio
 import asyncio
 from app.preprocessor.url_extractor import URLExtractor
 from app.preprocessor.content_fetcher import ContentFetcher
-from app.preprocessor.content_preprocessor import ContentPreprocessor
+from app.preprocessor.preprocessor import ContentPreprocessor
 
 # URL提取器测试
 def test_url_extractor():

@@ -176,3 +176,17 @@ cython_debug/
 data
 logs
 config.json
+
+# X-Cat specific
+.env
+.env.*
+!.env.example
+data/
+logs/
+cache/
+*.db
+*.sqlite
+*.sqlite3
+config/*.yaml
+!config/base.yaml
+!config/*.yaml.example

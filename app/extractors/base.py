@@ -10,48 +10,53 @@ from loguru import logger
 
 from .config import ExtractorConfig
 from .url_extractor import URLExtractor
+from app.cache.cache_manager import CacheManager
+from app.models.extracted_data import ExtractedData, DataSourceType
 
 class BaseExtractor(ABC):
-    """基础内容提取器接口"""
+    """数据提取器基类"""
     
-    def __init__(self, config: Optional[ExtractorConfig] = None):
+    def __init__(self, source_type: DataSourceType):
         """初始化提取器
         
         Args:
-            config: 提取器配置
+            source_type: 数据源类型
         """
-        self.source_type = self.get_source_type()
-        self.config = config or ExtractorConfig()
-        self.url_extractor = URLExtractor()
+        self.source_type = source_type
     
     @abstractmethod
-    def get_source_type(self) -> str:
-        """获取数据源类型"""
-        pass
-    
-    @abstractmethod
-    async def extract(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
-        """提取内容
+    def extract(self, raw_data: Any) -> ExtractedData:
+        """从原始数据中提取数据
         
         Args:
             raw_data: 原始数据
             
         Returns:
-            Dict: 提取结果
+            ExtractedData: 提取的数据
         """
         pass
     
-    @abstractmethod
-    async def validate(self, raw_data: Dict[str, Any]) -> bool:
-        """验证原始数据
+    def extract_batch(self, raw_data_list: List[Any]) -> List[ExtractedData]:
+        """批量提取数据
+        
+        Args:
+            raw_data_list: 原始数据列表
+            
+        Returns:
+            List[ExtractedData]: 提取的数据列表
+        """
+        return [self.extract(raw_data) for raw_data in raw_data_list]
+    
+    def _create_extracted_data(self, raw_data: Dict[str, Any]) -> ExtractedData:
+        """创建提取的数据对象
         
         Args:
             raw_data: 原始数据
             
         Returns:
-            bool: 是否有效
+            ExtractedData: 提取的数据
         """
-        pass
+        return ExtractedData.from_raw_data(raw_data, self.source_type)
     
     def _extract_urls(self, content: str) -> List[str]:
         """提取URL
@@ -146,4 +151,46 @@ class BaseExtractor(ABC):
             config_dict: 新的配置字典
         """
         self.config.update(config_dict)
-        logger.info(f"Updated config for extractor {self.source_type}") 
+        logger.info(f"Updated config for extractor {self.source_type}")
+    
+    def _get_cache_key(self, data: Dict[str, Any]) -> Optional[str]:
+        """获取缓存键
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Optional[str]: 缓存键，如果不支持缓存则返回None
+        """
+        raise NotImplementedError
+    
+    def _process_with_cache(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """使用缓存处理数据
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            Dict[str, Any]: 处理后的数据
+        """
+        # 获取缓存键
+        cache_key = self._get_cache_key(data)
+        if not cache_key:
+            return self.extract(data)
+        
+        # 检查缓存
+        if self.cache_manager.exists(cache_key):
+            logger.info(f"从缓存加载数据: {cache_key}")
+            cached_data = self.cache_manager.load(cache_key)
+            if cached_data:
+                return cached_data
+        
+        # 提取数据
+        extracted_data = self.extract(data)
+        
+        # 保存到缓存
+        if extracted_data:
+            self.cache_manager.save(cache_key, extracted_data)
+            logger.info(f"数据已缓存: {cache_key}")
+        
+        return extracted_data 

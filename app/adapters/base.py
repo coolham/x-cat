@@ -7,13 +7,14 @@ from datetime import datetime
 
 
 class BaseAdapter(ABC):
-    """基础适配器接口"""
+    """基础适配器类，作为所有消息提取器的基类"""
     
-    def __init__(self):
-        """初始化适配器"""
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.message_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
+        self.running = False
         self.source_type = self.get_source_type()
         self.initialized = False
-        self.message_callback = None
     
     @abstractmethod
     def get_source_type(self) -> str:
@@ -21,30 +22,33 @@ class BaseAdapter(ABC):
         pass
     
     @abstractmethod
-    async def initialize(self, message_callback: Callable[[Dict[str, Any]], None]) -> bool:
+    async def initialize(self, message_callback: Callable[[Dict[str, Any]], Awaitable[None]]) -> bool:
         """初始化适配器
         
         Args:
-            message_callback: 收到新消息时的回调函数
+            message_callback: 消息处理回调函数
             
         Returns:
-            bool: 初始化是否成功
+            初始化是否成功
         """
-        pass
+        self.message_callback = message_callback
+        self.initialized = True
+        return True
     
     @abstractmethod
-    async def start(self) -> bool:
-        """启动适配器
+    async def start_polling(self) -> bool:
+        """开始轮询消息
         
         Returns:
-            bool: 启动是否成功
+            启动是否成功
         """
-        pass
+        self.running = True
+        return True
     
     @abstractmethod
     async def stop(self) -> None:
-        """停止适配器"""
-        pass
+        """停止轮询"""
+        self.running = False
     
     @abstractmethod
     async def close(self) -> None:
@@ -107,6 +111,15 @@ class BaseAdapter(ABC):
             'urls': [],
             'errors': [error]
         }
+    
+    async def process_message(self, message: Dict[str, Any]) -> None:
+        """处理消息
+        
+        Args:
+            message: 消息数据
+        """
+        if self.message_callback:
+            await self.message_callback(message)
 
 class DataSourceAdapter(ABC):
     """Base class for all data source adapters"""

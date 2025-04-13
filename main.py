@@ -9,27 +9,62 @@ import json
 import asyncio
 import argparse
 import traceback
+import logging
+import signal
 from typing import Dict, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+from pathlib import Path
 
 from loguru import logger
 
-from app.core.runtime import Runtime
-from app.core.pipeline import Pipeline
-from app.core.processors import (
-    ContentExtractor,
-    ContentPreprocessor,
-    ContentClassifier,
-    ContentDistributor,
-    ContentStorage
-)
-from app.core.processor import ContentProcessor
-from app.preprocessor.content_preprocessor import ContentPreprocessor
-from app.adapters.telegram import TelegramAdapter
+from app.core.prefect_pipeline import PrefectPipeline
+from app.core.adapter_manager import AdapterManager
+from app.core.config_loader import load_config
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
+# 首先加载环境变量
+load_dotenv()
+
+# 检查环境变量是否加载成功
+http_proxy = os.environ.get('HTTP_PROXY', '')
+https_proxy = os.environ.get('HTTPS_PROXY', '')
+logger.info(f"加载环境变量后的代理设置: HTTP_PROXY={http_proxy}, HTTPS_PROXY={https_proxy}")
+
+# Replace user directory with project directory for Prefect-related files
+project_dir = Path(__file__).parent
+prefect_dir = project_dir / "prefect_files"
+
+# Ensure the directory exists
+prefect_dir.mkdir(parents=True, exist_ok=True)
+
+# Set Prefect environment variables to use the project directory
+os.environ["PREFECT_PROFILES_PATH"] = str(prefect_dir / "profiles.toml")
+os.environ["PREFECT_LOCAL_STORAGE_PATH"] = str(prefect_dir / "storage")
+
+# 确保配置文件路径存在
+profiles_path = os.environ["PREFECT_PROFILES_PATH"]
+profiles_dir = os.path.dirname(profiles_path)
+os.makedirs(profiles_dir, exist_ok=True)
+
+# 如果配置文件不存在，则创建一个空文件
+if not os.path.exists(profiles_path):
+    with open(profiles_path, "w") as f:
+        f.write("")
+
+# 确保存储路径存在
+storage_path = os.environ["PREFECT_LOCAL_STORAGE_PATH"]
+os.makedirs(storage_path, exist_ok=True)
+
+# 全局变量，用于存储管道和提取器管理器实例
+pipeline = None
+extractor_manager = None
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger.add("logs/app.log", rotation="10 MB")
 
 class DateTimeEncoder(json.JSONEncoder):
     """自定义JSON编码器，用于处理datetime对象"""
@@ -70,298 +105,143 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> No
     logger.info(f"日志系统已初始化，级别: {log_level}{f', 文件: {log_file}' if log_file else ''}")
 
 
-def load_config(config_file: str = "config.json") -> Dict[str, Any]:
-    """
-    加载配置文件
-    
-    Args:
-        config_file: 配置文件路径
-        
-    Returns:
-        配置字典
-    """
-    default_config = {
-        "system": {
-            "log_level": "INFO",
-            "log_file": "logs/app.log",
-            "data_dir": "data",
-            "worker_threads": 4,
-            "timezone": "Asia/Shanghai"  # 添加默认时区
-        },
-        "telegram_adapter": {
-            "api_key": "",
-            "channel_id": "",
-            "proxy_url": None,
-            "polling_interval": 60,
-            "processed_messages_file": "data/processed_messages.json",
-            "timezone": "Asia/Shanghai"  # 添加 Telegram 时区设置
-        },
-        "twitter_api": {
-            "enabled": False,
-            "api_key": "",
-            "api_secret": "",
-            "access_token": "",
-            "access_token_secret": "",
-            "bearer_token": "",
-            "proxy_url": None,
-            "timeout": 30,
-            "max_retries": 3,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        },
-        "content_analyzer": {
-            "api_key": "",
-            "model": "gpt-4",
-            "proxy_url": None,
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "max_concurrency": 1
-        },
-        "storage": {
-            "db_path": "data/storage.db",
-            "backup_dir": "data/backups"
-        }
-    }
-    
-    try:
-        # 加载 .env 文件
-        load_dotenv()
-        
-        # 从环境变量更新配置
-        env_config = {
-            "telegram_adapter": {
-                "api_key": os.getenv("TELEGRAM_API_KEY", ""),
-                "channel_id": os.getenv("TELEGRAM_CHANNEL_ID", ""),
-                "proxy_url": os.getenv("TELEGRAM_PROXY_URL"),
-                "polling_interval": int(os.getenv("TELEGRAM_POLLING_INTERVAL", "60")),
-                "timezone": os.getenv("TELEGRAM_TIMEZONE", "Asia/Shanghai"),  # 添加时区环境变量
-            },
-            "twitter_api": {
-                "api_key": os.getenv("TWITTER_API_KEY", ""),
-                "api_secret": os.getenv("TWITTER_API_SECRET", ""),
-                "access_token": os.getenv("TWITTER_ACCESS_TOKEN", ""),
-                "access_token_secret": os.getenv("TWITTER_ACCESS_TOKEN_SECRET", ""),
-                "bearer_token": os.getenv("TWITTER_BEARER_TOKEN", ""),
-                "proxy_url": os.getenv("TWITTER_PROXY_URL"),
-            },
-            "content_analyzer": {
-                "api_key": os.getenv("OPENAI_API_KEY", ""),
-                "proxy_url": os.getenv("OPENAI_PROXY_URL"),
-            },
-            "storage": {
-                "db_path": os.getenv("DB_PATH", "data/storage.db"),
-                "backup_dir": os.getenv("BACKUP_DIR", "data/backups"),
-            }
-        }
-        
-        # 检查 config.json 文件是否存在
-        if not os.path.exists(config_file):
-            logger.warning(f"配置文件 '{config_file}' 不存在，使用默认配置")
-            # 尝试加载示例配置
-            example_file = f"{config_file}.example"
-            if os.path.exists(example_file):
-                logger.info(f"加载示例配置文件: {example_file}")
-                with open(example_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-            else:
-                logger.warning(f"示例配置文件 '{example_file}' 不存在，使用硬编码默认配置")
-                config = default_config
-        else:
-            # 加载配置文件
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                logger.info(f"已加载配置文件: {config_file}")
-        
-        # 合并配置
-        for section in default_config:
-            if section not in config:
-                config[section] = default_config[section]
-            else:
-                for key in default_config[section]:
-                    if key not in config[section]:
-                        config[section][key] = default_config[section][key]
-        
-        # 使用环境变量覆盖配置
-        for section, values in env_config.items():
-            if section not in config:
-                config[section] = {}
-            for key, value in values.items():
-                if value:  # 只覆盖非空值
-                    config[section][key] = value
-        
-        # 验证必要的配置
-        if not config["telegram_adapter"]["api_key"] or not config["telegram_adapter"]["channel_id"]:
-            logger.error("缺少必要的 Telegram 配置信息")
-            return None
-            
-        return config
-    
-    except Exception as e:
-        logger.error(f"加载配置文件出错: {str(e)}")
-        logger.debug(traceback.format_exc())
-        return default_config
-
-
-def parse_args() -> argparse.Namespace:
-    """
-    解析命令行参数
-    
-    Returns:
-        解析后的参数
-    """
-    parser = argparse.ArgumentParser(description="X-Cat: 内容自动分类与存储系统")
-    parser.add_argument("--config", "-c", type=str, default="config.json", help="配置文件路径")
-    parser.add_argument("--log-level", "-l", type=str, default=None, help="日志级别 (DEBUG, INFO, WARNING, ERROR)")
-    parser.add_argument("--log-file", "-f", type=str, default=None, help="日志文件路径")
-    parser.add_argument("--data-dir", "-d", type=str, default=None, help="数据目录路径")
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="X-Cat 内容自动分类与存储系统")
+    parser.add_argument("-c", "--config", default="config", help="配置文件目录路径")
+    parser.add_argument("-e", "--env", default=".env", help="环境变量文件路径")
+    parser.add_argument("-l", "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="日志级别")
+    parser.add_argument("-f", "--log-file", help="日志文件路径")
+    parser.add_argument("-d", "--data-dir", help="数据目录路径")
     return parser.parse_args()
 
-
-async def process_message(message: Dict[str, Any], pipeline: Pipeline) -> None:
+def initialize_pipeline(config: Dict[str, Any]) -> PrefectPipeline:
     """
-    处理消息
+    初始化数据处理管道
     
     Args:
-        message: 消息数据
-        pipeline: 处理流水线
+        config: 应用配置
+        
+    Returns:
+        初始化后的管道
     """
-    try:
-        # 构建标准格式的消息
-        processed_message = {
-            'text': message.get('text', ''),
-            'content': message.get('text', ''),  # 同时提供 content 字段
-            'source': 'telegram',
-            'source_type': 'telegram',
-            'metadata': {
-                'message_id': message.get('message_id'),
-                'chat_id': message.get('chat_id'),
-                'chat_type': message.get('chat_type'),
-                'date': message.get('date'),
-                'from_user': message.get('from_user'),
-                'chat': message.get('chat'),
-                'message_type': message.get('message_type', 'text')
-            }
-        }
-        
-        # 添加URL字段用于缓存
-        if processed_message['text']:
-            processed_message['url'] = f"telegram:{processed_message['metadata']['message_id']}"
-        
-        # 处理消息
-        result = await pipeline.process(processed_message)
-        
-        if result and result.get('success', False):
-            logger.info(f"消息处理完成: {result.get('url', 'unknown')}")
-        else:
-            error_msg = result.get('error', '未知错误') if result else '处理失败'
-            logger.warning(f"消息处理失败: {error_msg}")
-            
-    except Exception as e:
-        logger.error(f"处理消息出错: {str(e)}")
-        logger.debug(traceback.format_exc())
+    return PrefectPipeline(config)
 
-async def main_async(config: Dict[str, Any], args: argparse.Namespace) -> int:
-    """异步主函数"""
-    try:
-        # 初始化运行时环境
-        runtime = Runtime(config)
-        if not await runtime.initialize():
-            logger.error("初始化运行时环境失败")
-            return 1
-            
-        # 初始化Telegram适配器
-        telegram_config = config.get('telegram_adapter', {})
-        telegram = TelegramAdapter(
-            api_key=telegram_config.get('api_key'),
-            channel_id=telegram_config.get('channel_id')
-        )
+async def shutdown(signal=None):
+    """清理并关闭应用"""
+    if signal:
+        logger.info(f"收到退出信号 {signal.name}...")
+    else:
+        logger.info("正在关闭应用...")
+    
+    if pipeline:
+        logger.info("正在停止管道...")
+        await pipeline.stop()
         
-        # 设置消息回调
-        async def message_callback(message: Dict[str, Any]) -> None:
-            await process_message(message, runtime.pipeline)
-        
-        # 初始化Telegram适配器
-        if not await telegram.initialize(message_callback):
-            logger.error("初始化Telegram适配器失败")
-            return 1
-            
-        # 启动轮询
-        if not await telegram.start_polling():
-            logger.error("启动Telegram轮询失败")
-            return 1
-            
-        logger.info("系统启动成功，开始处理消息...")
-        
-        try:
-            while True:
-                # 获取新消息
-                messages = telegram.get_received_messages()
-                if messages:
-                    for message in messages:
-                        await message_callback(message)
-                    
-                    # 清空已处理的消息
-                    telegram._received_messages = []
-                    logger.debug("已清空消息列表")
-                
-                # 等待一段时间再检查新消息
-                await asyncio.sleep(1)
-                
-        except KeyboardInterrupt:
-            logger.info("收到停止信号，正在关闭...")
-        finally:
-            # 关闭资源
-            await telegram.stop_polling()
-            await runtime.stop()
-        
-        return 0
-        
-    except Exception as e:
-        logger.error(f"运行出错: {str(e)}")
-        logger.debug(traceback.format_exc())
-        return 1
+    if extractor_manager:
+        logger.info("正在停止提取器管理器...")
+        await extractor_manager.stop()
+    
+    logger.info("关闭完成.")
 
+def handle_exception(loop, context):
+    """处理未捕获的异常"""
+    msg = context.get("exception", context["message"])
+    logger.error(f"未捕获的异常: {msg}")
+    logger.info("正在关闭...")
+    asyncio.create_task(shutdown())
 
-def main() -> int:
-    """主函数"""
+async def main_async():
+    """主异步函数"""
+    global pipeline, extractor_manager
+
     try:
-        # 解析命令行参数
-        args = parse_args()
-        
+        logger.info("启动流程开始...")
+
         # 加载配置
-        config = load_config(args.config)
-        if not config:
-            logger.error("配置加载失败，程序退出")
-            return 1
-            
-        # 优先使用命令行参数
-        if args.log_level:
-            config['system']['log_level'] = args.log_level
-        if args.log_file:
-            config['system']['log_file'] = args.log_file
-        if args.data_dir:
-            config['system']['data_dir'] = args.data_dir
-            
-        # 设置日志
-        setup_logging(
-            log_level=config['system']['log_level'],
-            log_file=config['system']['log_file']
-        )
-        
-        # 确保数据目录存在
-        os.makedirs(config['system']['data_dir'], exist_ok=True)
-        
-        # 确保日志目录存在
-        if 'log_file' in config['system'] and config['system']['log_file']:
-            os.makedirs(os.path.dirname(config['system']['log_file']), exist_ok=True)
-            
-        # 运行异步主函数
-        return asyncio.run(main_async(config, args))
-        
-    except Exception as e:
-        logger.error(f"运行出错: {str(e)}")
-        logger.debug(traceback.format_exc())
-        return 1
+        logger.info("加载配置文件...")
+        config_path = os.path.join(os.path.dirname(__file__), "config", "config.yaml")
+        config = load_config(config_path)
+        logger.info("配置文件加载完成")
 
+        # 初始化 Prefect 管道
+        logger.info("初始化 Prefect 管道...")
+        pipeline = PrefectPipeline(config)
+        pipeline.initialize()
+        logger.info("Prefect 管道初始化完成")
+
+        if 1:
+            # 初始化适配器管理器
+            logger.info("初始化适配器管理器...")
+            extractor_manager = AdapterManager(config)
+            await extractor_manager.initialize(pipeline.process)
+            logger.info("适配器管理器初始化完成")
+
+            # 启动适配器管理器
+            logger.info("启动适配器管理器...")
+            await extractor_manager.start()
+            logger.info("适配器管理器启动完成")
+        else:
+            # 在 main_async 函数中，启动适配器管理器后
+            logger.info("手动触发测试...")
+            test_data = {
+                "id": "test_123",
+                "content": "这是一条测试消息",
+                "source": "test",
+                "timestamp": datetime.now().isoformat()
+            }
+            result = await pipeline.process(test_data)
+            logger.info(f"测试结果: {result}")
+
+        # 保持程序运行
+        logger.info("系统启动完成，等待消息...")
+        while True:
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        logger.error(f"程序运行出错: {str(e)}")
+        logger.debug(f"异常详情: {traceback.format_exc()}")
+    finally:
+        logger.info("流程结束")
+
+def main():
+    """主入口点"""
+    try:
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # 设置异常处理器
+        loop.set_exception_handler(handle_exception)
+
+        # 设置信号处理 - Windows 兼容方式
+        if os.name == 'nt':  # Windows
+            def windows_signal_handler(sig, frame):
+                logger.info(f"收到信号 {sig}")
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(shutdown()))
+
+            signal.signal(signal.SIGINT, windows_signal_handler)
+            signal.signal(signal.SIGTERM, windows_signal_handler)
+        else:  # Unix/Linux/Mac
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(
+                    sig,
+                    lambda s=sig: asyncio.create_task(shutdown(s))
+                )
+
+        # 运行主异步函数
+        loop.run_until_complete(main_async())
+
+    except KeyboardInterrupt:
+        logger.info("应用被用户停止")
+        if 'loop' in locals() and not loop.is_closed():
+            loop.run_until_complete(shutdown())
+    except Exception as e:
+        logger.error(f"应用错误: {str(e)}")
+        raise
+    finally:
+        if 'loop' in locals() and not loop.is_closed():
+            loop.close()
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

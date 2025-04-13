@@ -1,215 +1,191 @@
 # -*- coding: utf-8 -*-
 """
-Category Manager
-Provides core management functionality for the classification system
+分类管理器
+负责管理消息分类系统
 """
-from typing import Dict, List, Optional, Any
+import os
+import json
+from typing import Dict, Any, Optional, List
 from loguru import logger
+from prefect import task
 
-from app.core.runtime import Runtime
-from app.core.module import Module
-from app.core.events import MessageAnalyzed
-
-from .models.category import Category, CategoryLevel
-from .storage.category_storage import CategoryStorage
-from .ai.classifier import AIClassifier
-
-class CategoryManager(Module):
-    """Category Manager Class"""
+class CategoryManager:
+    """分类管理器"""
     
-    def __init__(self, runtime: Runtime):
-        """Initialize the category manager"""
-        super().__init__(runtime=runtime, module_id="category_manager")
-        self.storage = None
-        self.classifier = None
-        self.config = {}
-        self.is_running = False
-        self.initialized = False
+    def __init__(self, config: Dict[str, Any]):
+        """初始化分类管理器
+        
+        Args:
+            config: 配置字典
+        """
+        self.config = config
+        self.categories = {}
+        self._initialized = False
     
-    async def initialize(self, config: Dict[str, Any]) -> bool:
-        """Initialize the category manager"""
+    async def initialize(self) -> bool:
+        """
+        初始化分类管理器
+        
+        Returns:
+            初始化是否成功
+        """
         try:
-            self.config = config
+            # 加载分类配置
+            if "categories" not in self.config:
+                logger.warning("配置中没有categories字段，将使用默认分类")
+                self.categories = {
+                    "default": {
+                        "name": "默认分类",
+                        "description": "未分类的消息",
+                        "keywords": []
+                    }
+                }
+            else:
+                self.categories = self.config["categories"]
             
-            # Get storage module reference
-            storage_module = self.runtime.get_module("storage")
-            if not storage_module:
-                logger.error("Failed to get storage module")
-                return False
-            
-            # Create category storage
-            self.storage = CategoryStorage(storage_module)
-            if not await self.storage.initialize():
-                logger.error("Failed to initialize category storage")
-                return False
-            
-            # Create AI classifier
-            self.classifier = AIClassifier(self.runtime, self.storage)
-            if not await self.classifier.initialize(config):
-                logger.error("Failed to initialize AI classifier")
-                return False
-            
-            # Register event handler
-            if hasattr(self.runtime, "event_bus"):
-                self.runtime.event_bus.subscribe(MessageAnalyzed, self._handle_message_analyzed)
-            
-            self.initialized = True
-            logger.info("Category manager initialization successful")
+            self._initialized = True
+            logger.info("分类管理器初始化成功")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize category manager: {str(e)}")
+            logger.error(f"分类管理器初始化失败: {str(e)}")
             return False
     
-    async def start(self) -> bool:
-        """Start the category manager"""
-        if not self.initialized:
-            logger.error("Category manager not initialized")
+    @task(name="get_category")
+    def get_category(self, message: Dict[str, Any]) -> str:
+        """
+        获取消息的分类
+        
+        Args:
+            message: 消息数据
+            
+        Returns:
+            消息的分类
+        """
+        if not self._initialized:
+            logger.error("分类管理器未初始化")
+            return "default"
+            
+        try:
+            # 提取消息内容
+            content = message.get("text", "").lower()
+            
+            # 遍历所有分类，检查关键词匹配
+            for category_id, category in self.categories.items():
+                keywords = category.get("keywords", [])
+                for keyword in keywords:
+                    if keyword.lower() in content:
+                        return category_id
+            
+            # 如果没有匹配的分类，返回默认分类
+            return "default"
+            
+        except Exception as e:
+            logger.error(f"获取消息分类时出错: {str(e)}")
+            return "default"
+    
+    @task(name="add_category")
+    def add_category(self, category_id: str, category_data: Dict[str, Any]) -> bool:
+        """
+        添加新的分类
+        
+        Args:
+            category_id: 分类ID
+            category_data: 分类数据
+            
+        Returns:
+            是否添加成功
+        """
+        if not self._initialized:
+            logger.error("分类管理器未初始化")
             return False
             
-        self.is_running = True
-        logger.info("Category manager started")
-        return True
-    
-    async def stop(self) -> bool:
-        """Stop the category manager"""
-        self.is_running = False
-        logger.info("Category manager stopped")
-        return True
-    
-    async def _handle_message_analyzed(self, event: MessageAnalyzed) -> None:
-        """Handle message analyzed event"""
-        if not self.is_running:
-            return
-            
-        message_id = event.message.message_id
-        content = event.message.content
-        analysis = event.analysis_result
-        
-        # Classify content
-        logger.info(f"Starting to classify message: {message_id}")
-        
-        # Use AI to classify
-        classification = await self.classifier.classify_content(
-            message_id=message_id,
-            content=content,
-            full_analysis=analysis
-        )
-        
-        if not classification:
-            logger.error(f"Failed to classify message: {message_id}")
-            return
-            
-        # Store classification result
-        logger.info(f"Classification result: {classification}")
-        
-        await self.storage.store_content_category(
-            message_id=message_id,
-            primary_cat_id=classification["primary_category_id"],
-            secondary_cat_id=classification.get("secondary_category_id"),
-            confidence=classification["confidence"]
-        )
-        
-        logger.info(f"Message classification completed: {message_id}")
-    
-    async def get_active_categories(self, level: Optional[CategoryLevel] = None) -> List[Dict]:
-        """Get current active category list"""
-        if not self.storage:
-            return []
-            
-        return await self.storage.get_category_list(level)
-    
-    async def add_primary_category(self, name: str, description: str, 
-                                examples: List[str]) -> Optional[Dict]:
-        """Add primary category"""
         try:
-            category = Category.create_primary(
-                name=name,
-                description=description,
-                examples=examples
-            )
+            # 检查分类ID是否已存在
+            if category_id in self.categories:
+                logger.warning(f"分类ID已存在: {category_id}")
+                return False
             
-            # Store in database
-            conn = self.storage.storage_module.connection
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-            INSERT INTO categories (id, name, level, description, examples, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                category.id,
-                category.name,
-                category.level.value,
-                category.description,
-                json.dumps(category.examples),
-                int(time.time()),
-                int(time.time())
-            ))
-            
-            conn.commit()
-            return category.to_dict()
+            # 添加新分类
+            self.categories[category_id] = category_data
+            logger.info(f"成功添加新分类: {category_id}")
+            return True
             
         except Exception as e:
-            logger.error(f"Failed to add primary category: {str(e)}")
-            return None
+            logger.error(f"添加分类时出错: {str(e)}")
+            return False
     
-    async def add_secondary_category(self, name: str, description: str, 
-                                   parent_id: str, examples: List[str]) -> Optional[Dict]:
-        """Add secondary category"""
+    @task(name="update_category")
+    def update_category(self, category_id: str, category_data: Dict[str, Any]) -> bool:
+        """
+        更新分类
+        
+        Args:
+            category_id: 分类ID
+            category_data: 新的分类数据
+            
+        Returns:
+            是否更新成功
+        """
+        if not self._initialized:
+            logger.error("分类管理器未初始化")
+            return False
+            
         try:
-            category = Category.create_secondary(
-                name=name,
-                description=description,
-                parent_id=parent_id,
-                examples=examples
-            )
+            # 检查分类ID是否存在
+            if category_id not in self.categories:
+                logger.warning(f"分类ID不存在: {category_id}")
+                return False
             
-            # Store in database
-            conn = self.storage.storage_module.connection
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-            INSERT INTO categories (id, name, level, description, parent_id, examples, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                category.id,
-                category.name,
-                category.level.value,
-                category.description,
-                category.parent_id,
-                json.dumps(category.examples),
-                int(time.time()),
-                int(time.time())
-            ))
-            
-            conn.commit()
-            return category.to_dict()
+            # 更新分类
+            self.categories[category_id].update(category_data)
+            logger.info(f"成功更新分类: {category_id}")
+            return True
             
         except Exception as e:
-            logger.error(f"Failed to add secondary category: {str(e)}")
-            return None
+            logger.error(f"更新分类时出错: {str(e)}")
+            return False
     
-    async def classify_message(self, message_id: str, content: str) -> Optional[Dict]:
-        """Classify message directly"""
-        if not self.is_running or not self.classifier:
-            logger.error("Category manager not running or classifier not initialized")
-            return None
-            
-        # Directly call classifier
-        classification = await self.classifier.classify_content(
-            message_id=message_id,
-            content=content
-        )
+    @task(name="delete_category")
+    def delete_category(self, category_id: str) -> bool:
+        """
+        删除分类
         
-        if not classification:
-            return None
+        Args:
+            category_id: 分类ID
             
-        # Store classification result
-        await self.storage.store_content_category(
-            message_id=message_id,
-            primary_cat_id=classification["primary_category_id"],
-            secondary_cat_id=classification.get("secondary_category_id"),
-            confidence=classification["confidence"]
-        )
+        Returns:
+            是否删除成功
+        """
+        if not self._initialized:
+            logger.error("分类管理器未初始化")
+            return False
+            
+        try:
+            # 检查分类ID是否存在
+            if category_id not in self.categories:
+                logger.warning(f"分类ID不存在: {category_id}")
+                return False
+            
+            # 不允许删除默认分类
+            if category_id == "default":
+                logger.warning("不能删除默认分类")
+                return False
+            
+            # 删除分类
+            del self.categories[category_id]
+            logger.info(f"成功删除分类: {category_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"删除分类时出错: {str(e)}")
+            return False
+    
+    def get_all_categories(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有分类
         
-        return classification
+        Returns:
+            所有分类的字典
+        """
+        return self.categories.copy()

@@ -9,235 +9,158 @@ from typing import Dict, Any, List, Tuple, Optional
 import traceback
 import time
 from urllib.parse import urlparse
+import os
+import logging
 
 from loguru import logger
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 
 
 class ContentFetcher:
-    """
-    网页内容获取模块
-    负责从URL获取网页内容，提取正文，处理不同类型的网页
+    """内容获取器"""
     
-    职责:
-    1. 访问和下载网页内容
-    2. 提取网页正文
-    3. 清理和格式化内容
-    4. 处理各种网页类型和格式
-    """
-    
-    def __init__(
-        self,
-        proxy_url: Optional[str] = None,
-        timeout: int = 30,
-        max_content_length: int = 8000,
-        user_agent: Optional[str] = None,
-        max_retries: int = 2
-    ):
-        """
-        初始化网页内容获取模块
+    def __init__(self, timeout: int = 5, max_content_length: int = 1000, use_cache: bool = False):
+        """初始化内容获取器
         
         Args:
-            proxy_url: 代理服务器URL (可选)
-            timeout: 请求超时时间(秒)
-            max_content_length: 提取内容的最大长度
-            user_agent: 自定义User-Agent
-            max_retries: 最大重试次数
+            timeout: 超时时间(秒)
+            max_content_length: 最大内容长度
+            use_cache: 是否使用缓存
         """
-        self.proxy_url = proxy_url
+        self.logger = logging.getLogger(__name__)
         self.timeout = timeout
         self.max_content_length = max_content_length
-        self.max_retries = max_retries
+        self.use_cache = use_cache
         
-        # 默认User-Agent
-        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        # 初始化 aiohttp 获取器
+        self.aiohttp_fetcher = AioHttpFetcher(timeout=timeout, max_content_length=max_content_length)
         
-        # HTTP会话
-        self._session = None
+        # 初始化 Playwright 获取器
+        self.playwright_fetcher = PlaywrightFetcher(timeout=timeout, max_content_length=max_content_length)
         
-        # 站点特定处理器
-        self.site_handlers = {
-            "twitter.com": self._extract_twitter,
-            "x.com": self._extract_twitter,
-            "medium.com": self._extract_medium,
-            "github.com": self._extract_github
+        # 初始化缓存管理器
+        self.cache_manager = CacheManager()
+        
+        self.logger.info(f"初始化内容获取器: timeout={timeout}s, max_content_length={max_content_length}")
+        if not use_cache:
+            self.logger.info("缓存已禁用")
+    
+    async def _ensure_browser(self):
+        """确保浏览器已启动"""
+        if not hasattr(self, '_browser'):
+            self._browser = await self.playwright_fetcher._ensure_playwright()
+    
+    async def _fetch_single_url(self, url: str) -> Dict[str, Any]:
+        """获取单个URL的内容
+        
+        Args:
+            url: URL地址
+            
+        Returns:
+            Dict[str, Any]: 获取结果
+        """
+        # 检查缓存
+        if self.use_cache:
+            cached_content = await self.cache_manager.get(url)
+            if cached_content:
+                self.logger.info(f"使用缓存数据: {url}")
+                return {
+                    'success': True,
+                    'content': cached_content,
+                    'url': url
+                }
+        
+        # 尝试使用 aiohttp 获取
+        self.logger.debug(f"尝试使用 aiohttp 获取: {url}")
+        try:
+            content = await self.aiohttp_fetcher.fetch(url)
+            if content:
+                self.logger.info(f"使用 aiohttp 获取内容成功: {url}")
+                if self.use_cache:
+                    await self.cache_manager.set(url, content)
+                return {
+                    'success': True,
+                    'content': content,
+                    'url': url
+                }
+        except Exception as e:
+            self.logger.warning(f"aiohttp 获取失败: {url} - {str(e)}")
+        
+        # 尝试使用 Playwright 获取
+        self.logger.debug(f"尝试使用 Playwright 获取: {url}")
+        try:
+            await self._ensure_browser()
+            content = await self.playwright_fetcher.fetch(url)
+            if content:
+                self.logger.info(f"使用 Playwright 获取内容成功: {url}")
+                if self.use_cache:
+                    await self.cache_manager.set(url, content)
+                return {
+                    'success': True,
+                    'content': content,
+                    'url': url
+                }
+        except Exception as e:
+            self.logger.warning(f"Playwright 获取失败: {url} - {str(e)}")
+        
+        # 所有获取方式都失败
+        self.logger.error(f"所有获取方式都失败: {url}")
+        return {
+            'success': False,
+            'error': str(e),
+            'url': url
         }
     
     async def fetch(self, urls: List[str]) -> List[Dict[str, Any]]:
-        """
-        获取多个URL的内容
+        """获取多个URL的内容
         
         Args:
-            urls: URL列表
+            urls: URL地址列表
             
         Returns:
-            内容列表，每个元素是一个字典
+            List[Dict[str, Any]]: 获取结果列表
         """
-        if not urls:
-            return []
-            
-        # 确保会话已初始化
-        await self._ensure_session()
+        self.logger.info(f"开始获取 {len(urls)} 个URL的内容，获取方式: {'aiohttp/Playwright'}")
         
-        # 并行获取内容
+        # 并发获取所有URL的内容
         tasks = [self._fetch_single_url(url) for url in urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks)
         
-        contents = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # 处理异常
-                logger.error(f"获取URL内容失败: {urls[i]} - {str(result)}")
-                contents.append({
-                    "url": urls[i],
-                    "success": False,
-                    "error": f"获取失败: {str(result)}",
-                    "content": "",
-                    "title": "",
-                    "type": "error"
-                })
-            else:
-                contents.append(result)
+        # 统计结果
+        success_count = sum(1 for r in results if r['success'])
+        self.logger.info(f"内容获取完成: 总数={len(urls)}, 成功={success_count}, 失败={len(urls)-success_count}")
         
-        return contents
+        return results
     
-    async def _fetch_single_url(self, url: str) -> Dict[str, Any]:
-        """
-        获取单个URL的内容
+    async def close(self):
+        """关闭所有资源"""
+        self.logger.info("开始关闭所有内容获取器")
+        
+        # 关闭 aiohttp 获取器
+        await self.aiohttp_fetcher.close()
+        
+        # 关闭 Playwright 获取器
+        await self.playwright_fetcher.close()
+        
+        # 关闭缓存管理器
+        await self.cache_manager.close()
+        
+        self.logger.info("所有内容获取器已关闭")
+    
+    def _log_content_preview(self, content: str, url: str):
+        """记录内容预览
         
         Args:
-            url: URL
-            
-        Returns:
-            内容字典
+            content: 内容
+            url: URL地址
         """
-        # 解析域名
-        domain = urlparse(url).netloc
-        
-        # 尝试站点特定处理
-        if any(site in domain for site in self.site_handlers):
-            for site, handler in self.site_handlers.items():
-                if site in domain:
-                    return await handler(url)
-        
-        # 通用处理
-        return await self._fetch_generic(url)
-    
-    async def _fetch_generic(self, url: str) -> Dict[str, Any]:
-        """
-        通用网页内容获取处理
-        
-        Args:
-            url: URL
-            
-        Returns:
-            内容字典
-        """
-        retries = 0
-        while retries <= self.max_retries:
-            try:
-                async with self._session.get(
-                    url,
-                    proxy=self.proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    headers={"User-Agent": self.user_agent}
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"HTTP错误: {response.status}")
-                    
-                    # 检查内容类型
-                    content_type = response.headers.get("Content-Type", "")
-                    if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
-                        return {
-                            "url": url,
-                            "success": True,
-                            "content": f"[非HTML内容: {content_type}]",
-                            "title": url,
-                            "type": "non_html"
-                        }
-                    
-                    # 获取HTML内容
-                    html = await response.text()
-                    
-                    # 解析HTML
-                    soup = BeautifulSoup(html, "html.parser")
-                    
-                    # 提取标题
-                    title = soup.title.text.strip() if soup.title else url
-                    
-                    # 提取正文
-                    content = self._extract_main_content(soup)
-                    
-                    # 裁剪内容长度
-                    if len(content) > self.max_content_length:
-                        content = content[:self.max_content_length] + "..."
-                    
-                    return {
-                        "url": url,
-                        "success": True,
-                        "content": content,
-                        "title": title,
-                        "type": "html"
-                    }
-                    
-            except Exception as e:
-                retries += 1
-                if retries > self.max_retries:
-                    return {
-                        "url": url,
-                        "success": False,
-                        "error": f"获取失败: {str(e)}",
-                        "content": "",
-                        "title": url,
-                        "type": "error"
-                    }
-                # 重试前等待
-                await asyncio.sleep(1)
-    
-    def _extract_main_content(self, soup: BeautifulSoup) -> str:
-        """
-        提取HTML主要内容
-        
-        Args:
-            soup: BeautifulSoup对象
-            
-        Returns:
-            提取的主要内容
-        """
-        # 移除脚本、样式等元素
-        for script in soup(["script", "style", "header", "footer", "nav", "aside"]):
-            script.decompose()
-        
-        # 尝试查找主内容
-        main_content = None
-        
-        # 尝试找到主要内容容器
-        for container in [
-            soup.find("main"),
-            soup.find("article"),
-            soup.find(id=re.compile("^(content|main|article)")),
-            soup.find(class_=re.compile("^(content|main|article)"))
-        ]:
-            if container:
-                main_content = container
-                break
-        
-        # 如果找不到主内容容器，使用body
-        if not main_content:
-            main_content = soup.body if soup.body else soup
-        
-        # 获取文本
-        text = main_content.get_text(separator="\n")
-        
-        # 清理文本
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        text = "\n".join(lines)
-        
-        return text
-    
+        preview = content[:100] + "..." if len(content) > 100 else content
+        self.logger.debug(f"内容预览: {preview}")
+
     async def _extract_twitter(self, url: str) -> Dict[str, Any]:
         """
-        提取Twitter/X内容
+        使用Playwright提取Twitter/X内容
         
         Args:
             url: Twitter/X URL
@@ -245,10 +168,94 @@ class ContentFetcher:
         Returns:
             内容字典
         """
-        # 调用通用处理，后续可以添加Twitter特定处理逻辑
-        result = await self._fetch_generic(url)
-        result["type"] = "twitter"
-        return result
+        page = None
+        try:
+            # 确保浏览器已初始化
+            await self._ensure_browser()
+            
+            # 创建新页面
+            page = await self._browser.new_page()
+            
+            # 设置超时
+            page.set_default_timeout(self.timeout * 1000)
+            
+            try:
+                # 访问URL
+                await page.goto(url, wait_until="networkidle")
+                
+                # 等待推文内容加载
+                await page.wait_for_selector('article[data-testid="tweet"]', timeout=10000)
+                
+                # 提取推文内容
+                tweet = await page.query_selector('article[data-testid="tweet"]')
+                if not tweet:
+                    return {
+                        "url": url,
+                        "success": False,
+                        "error": "未找到推文内容",
+                        "content": "",
+                        "title": url,
+                        "type": "error"
+                    }
+                
+                # 提取文本内容
+                content = await tweet.evaluate('(el) => el.innerText')
+                
+                # 提取作者信息
+                author = await page.query_selector('div[data-testid="User-Name"]')
+                author_name = await author.evaluate('(el) => el.innerText') if author else "未知作者"
+                
+                # 提取时间戳
+                time_element = await page.query_selector('time')
+                timestamp = await time_element.get_attribute('datetime') if time_element else None
+                
+                # 裁剪内容长度
+                if len(content) > self.max_content_length:
+                    content = content[:self.max_content_length] + "..."
+                
+                return {
+                    "url": url,
+                    "success": True,
+                    "content": content,
+                    "title": f"推文 - {author_name}",
+                    "type": "twitter",
+                    "metadata": {
+                        "author": author_name,
+                        "timestamp": timestamp
+                    }
+                }
+                
+            except PlaywrightTimeoutError:
+                return {
+                    "url": url,
+                    "success": False,
+                    "error": "Navigation timeout",
+                    "content": "",
+                    "title": url,
+                    "type": "error"
+                }
+            except Exception as e:
+                error_msg = str(e)
+                if "net::" in error_msg:
+                    error_msg = error_msg.split("net::")[1]
+                elif "JavaScript" in error_msg:
+                    error_msg = "请开启JavaScript以访问内容"
+                
+                return {
+                    "url": url,
+                    "success": False,
+                    "error": error_msg,
+                    "content": "",
+                    "title": url,
+                    "type": "error"
+                }
+                
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception as e:
+                    logger.error(f"关闭页面失败: {str(e)}")
     
     async def _extract_medium(self, url: str) -> Dict[str, Any]:
         """
@@ -261,7 +268,7 @@ class ContentFetcher:
             内容字典
         """
         # 调用通用处理，后续可以添加Medium特定处理逻辑
-        result = await self._fetch_generic(url)
+        result = await self._fetch_single_url(url)
         result["type"] = "medium"
         return result
     
@@ -276,7 +283,7 @@ class ContentFetcher:
             内容字典
         """
         # 调用通用处理，后续可以添加GitHub特定处理逻辑
-        result = await self._fetch_generic(url)
+        result = await self._fetch_single_url(url)
         result["type"] = "github"
         return result
     
@@ -286,6 +293,24 @@ class ContentFetcher:
             self._session = aiohttp.ClientSession()
     
     async def close(self):
-        """关闭HTTP会话"""
-        if self._session and not self._session.closed:
-            await self._session.close() 
+        """关闭所有连接"""
+        logger.info("开始关闭所有内容获取器")
+        
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
+            
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception as e:
+                    logger.error(f"关闭浏览器失败: {str(e)}")
+                finally:
+                    self._browser = None
+            
+            logger.info("所有内容获取器已关闭")
+            
+        except Exception as e:
+            logger.error(f"关闭资源时发生错误: {str(e)}")
+            # 不抛出异常，确保所有资源都尝试关闭 

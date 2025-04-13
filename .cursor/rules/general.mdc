@@ -19,6 +19,9 @@ alwaysApply: false
 - AI分析器: 使用GPT对内容进行分类和总结
 - 存储后端: 将分析结果存储到本地数据库
 
+## 要求
+- For the basic functions of the new module, first give a solution, and then modify the code after confirmation.
+
 ## 当前进度
 
 目前已完成系统基础架构和Telegram数据源适配器，下一步将实现GPT分析器。详细进度请参考`docs/development_plan.md`文档。

@@ -1,0 +1,57 @@
+# Base configuration file
+# This file contains default settings for all components
+
+# System settings
+system:
+  log_level: INFO
+  log_file: logs/app.log
+  data_dir: data
+  worker_threads: 4
+  timezone: Asia/Shanghai
+
+# Content extractor settings
+content_extractor:
+  max_length: 8000
+  save_media: false
+  media_dir: data/media
+
+# Content preprocessor settings
+content_preprocessor:
+  max_length: 8000
+  remove_urls: true
+  remove_emails: true
+  remove_phone_numbers: true
+
+# Content classifier settings
+content_classifier:
+  provider: openai
+  model: gpt-4
+  max_tokens: 2000
+  temperature: 0.7
+  confidence_threshold: 0.7
+  categories:
+    - AI
+    - Python
+    - 电子设计
+    - 数字货币
+    - 其他
+
+# Content distributor settings
+content_distributor:
+  default_channel: 其他
+  category_channels:
+    AI: "@ai_channel"
+    Python: "@python_channel"
+    电子设计: "@electronics_channel"
+    数字货币: "@crypto_channel"
+    其他: "@other_channel"
+
+# Storage settings
+storage:
+  db_path: data/storage.db
+  backup_dir: data/backups
+  backup:
+    enabled: true
+    interval: 86400  # 24 hours
+    max_backups: 7
+

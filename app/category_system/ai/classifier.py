@@ -6,7 +6,7 @@ AI分类器
 from typing import Dict, Optional, Any
 from loguru import logger
 
-from app.core.processors import BaseProcessor
+from app.processors.base_processor import BaseProcessor
 from ..models.category_manager import CategoryManager
 
 class AIClassifier(BaseProcessor):

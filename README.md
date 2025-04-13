@@ -1,218 +1,137 @@
-# X-Cat 信息聚合与分析系统
+# X-Cat
 
-X-Cat是一个模块化的信息聚合与分析系统，设计用于收集、存储和分析来自各种来源的信息，特别是社交媒体和消息平台。系统可以自动获取、处理和分类信息，帮助用户从大量数据中获取有价值的见解。
+X-Cat 是一个基于 Prefect 的数据处理管道系统，用于自动提取、处理和存储来自 Telegram 的消息内容。
 
-## 系统架构
+## 功能特点
 
-X-Cat采用模块化设计，主要包括以下组件：
+- 基于 Prefect 的数据处理管道
+- 支持 Telegram 消息自动提取
+- 数据预处理和分类
+- 多目标数据分发（本地存储、飞书文档、飞书多维表格等）
+- 完善的错误处理和重试机制
+- 详细的日志记录
 
-1. **核心框架**：负责模块管理、配置和生命周期控制
-2. **适配器**：连接各种信息源（如Telegram、RSS等）
-3. **存储系统**：使用SQLite存储消息和分析结果
-4. **分析器**：提供内容分析功能，包括AI驱动的分类和摘要
-5. **处理器**：处理和转换原始数据
-6. **浏览器模拟**：使用 Playwright 获取动态网页内容
-
-## 当前功能
-
-- ✅ 从Telegram频道接收消息
-- ✅ 存储消息到本地数据库
-- ✅ 基础的消息分析和记录
-- ✅ AI内容分析（使用OpenAI、OpenRouter或DeepSeek）
-- ✅ 网页内容提取和处理
-- ✅ 代理服务器支持
-- ✅ 浏览器模拟（支持动态内容获取）
-
-## 内容分析器功能
-
-X-Cat 的内容分析器模块提供强大的内容理解和分类能力:
-
-- **内容类型识别**：自动识别文章、问答、新闻、评论等内容类型
-- **分类与子分类**：对内容进行多层次分类，如技术、娱乐、科学等
-- **情感分析**：检测内容的情感倾向（积极、消极、中性）
-- **关键词提取**：自动提取内容中的重要关键词
-- **摘要生成**：为长内容生成简洁的摘要
-- **网页内容处理**：自动提取和分析消息中包含的URL内容
-- **多语言支持**：支持多种语言的内容分析
-- **动态内容获取**：使用 Playwright 获取需要 JavaScript 渲染的网页内容
-
-您可以在 [examples/analyze_content.py](examples/analyze_content.py) 中查看示例用法。
-
-## 安装说明
-
-### 系统要求
+## 系统要求
 
 - Python 3.8+
-- pip (Python包管理器)
-- 可选：代理服务器（用于访问被限制的API）
+- 依赖包：见 `requirements.txt`
 
-### 安装步骤
+## 安装
 
 1. 克隆仓库：
-   ```
-   git clone https://github.com/yourusername/x-cat.git
-   cd x-cat
-   ```
+
+```bash
+git clone https://github.com/yourusername/x-cat.git
+cd x-cat
+```
 
 2. 安装依赖：
-   ```
-   pip install -r requirements.txt
-   ```
 
-3. 安装 Playwright：
-   ```
-   # 安装 Playwright
-   pip install playwright
-   
-   # 安装浏览器
-   playwright install chromium
-   ```
-
-4. 配置系统：
-   - 复制`.env.example`为`.env`
-   - 编辑`.env`文件，设置必要的配置（如Telegram令牌、API密钥等）
-
-## 配置说明
-
-### 基本配置
-
-创建`.env`文件，包含以下配置项：
-
-```
-# 日志级别
-LOG_LEVEL=INFO
-
-# 数据存储
-DATA_DIR=./data
-SQLITE_DB=x-cat.db
-
-# Telegram配置
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_SESSION_NAME=x_cat_session
-
-# AI服务配置（至少配置一个）
-OPENAI_API_KEY=your_openai_api_key
-OPENROUTER_API_KEY=your_openrouter_api_key
-DEEPSEEK_API_KEY=your_deepseek_api_key
-
-# 代理服务器配置（可选）
-HTTP_PROXY=http://127.0.0.1:7890
-HTTPS_PROXY=http://127.0.0.1:7890
-
-# 浏览器模拟配置
-PREPROCESSOR_USE_PROXY=true
-BROWSER_TIMEOUT=30
+```bash
+pip install -r requirements.txt
 ```
 
-### 浏览器模拟配置
+3. 配置环境变量：
 
-系统使用 Playwright 进行浏览器模拟，以获取动态内容（如 Twitter/X 等网站）。在 `config.json` 中可以配置浏览器相关参数：
-
-```json
-{
-    "browser": {
-        "headless": true,
-        "timeout": 30,
-        "viewport": {
-            "width": 1920,
-            "height": 1080
-        }
-    }
-}
+```bash
+cp .env.example .env
+# 编辑 .env 文件，填入你的 API 密钥和其他配置
 ```
 
-主要特点：
-1. 无头模式运行
-2. 支持代理配置
-3. 自动等待页面加载
-4. 支持 JavaScript 执行
-5. 模拟真实浏览器行为
+## 配置
 
-### AI提供商配置
-
-系统支持多种AI服务提供商，您可以选择配置其中一个或多个：
-
-1. **OpenAI API**：设置`OPENAI_API_KEY`环境变量
-2. **OpenRouter**：设置`OPENROUTER_API_KEY`环境变量（可访问多种模型）
-3. **DeepSeek**：设置`DEEPSEEK_API_KEY`环境变量
-
-系统会按照优先级使用已配置的服务：OpenRouter > DeepSeek > OpenAI。
-
-### 代理服务器配置
-
-如果您需要通过代理服务器访问AI服务或其他网络资源，请设置以下环境变量：
-```
-HTTP_PROXY=http://your_proxy_server:port
-HTTPS_PROXY=http://your_proxy_server:port
-```
-
-对于特定提供商的代理控制，可以设置：
-```
-OPENAI_USE_PROXY=true
-OPENROUTER_USE_PROXY=true
-DEEPSEEK_USE_PROXY=true
-PREPROCESSOR_USE_PROXY=true
-```
+1. 编辑 `config/config.yaml` 文件，根据需要调整配置项
+2. 确保 `.env` 文件中包含所有必要的环境变量
 
 ## 使用方法
 
-### 启动系统
+### 基本用法
 
-```
-python main.py
-```
-
-### 测试AI功能
-
-```
-python tests/test_ai_client.py
+```bash
+python -m app.main
 ```
 
-### 添加到监控频道
+### 命令行参数
 
-将已创建的Telegram机器人添加到您想要监控的频道中，并确保它具有读取消息的权限。
+- `-c, --config`: 配置文件目录路径（默认：`config`）
+- `-e, --env`: 环境变量文件路径（默认：`.env`）
+- `-l, --log-level`: 日志级别（可选：DEBUG, INFO, WARNING, ERROR, CRITICAL）
+- `-f, --log-file`: 日志文件路径
+- `-d, --data-dir`: 数据目录路径
 
-## 常见问题
+示例：
 
-### Playwright 相关
+```bash
+python -m app.main -c custom_config -e custom.env -l DEBUG -f logs/debug.log
+```
 
-1. 安装失败
-   - 确保系统已安装 Python 3.8 或更高版本
-   - 检查网络连接
-   - 尝试使用国内镜像源
+## 项目结构
 
-2. 代理连接问题
-   - 检查代理服务器是否正常运行
-   - 验证代理配置是否正确
-   - 尝试不同的代理协议（HTTP/SOCKS5）
+```
+x-cat/
+├── app/
+│   ├── adapters/         # 适配器（Telegram等）
+│   ├── core/             # 核心组件
+│   ├── models/           # 数据模型
+│   ├── processors/       # 处理器
+│   ├── storage/          # 存储适配器
+│   └── utils/            # 工具函数
+├── config/               # 配置文件
+├── data/                 # 数据目录
+├── logs/                 # 日志目录
+├── .env.example          # 环境变量模板
+├── .gitignore            # Git忽略文件
+├── README.md             # 项目说明
+└── requirements.txt      # 依赖列表
+```
 
-3. 内容获取失败
-   - 检查网络连接
-   - 验证 URL 是否可访问
-   - 查看日志文件了解详细错误信息
+## 开发指南
 
-## 开发计划
+### 添加新的处理器
 
-我们计划进一步扩展系统功能，包括：
+1. 在 `app/processors/` 目录下创建新的处理器类
+2. 在 `config/config.yaml` 中添加相应的配置项
+3. 在 `app/core/prefect_pipeline.py` 中注册新的处理器
 
-1. 高级内容分析和聚类
-2. 数据可视化界面
-3. 更多信息源适配器
-4. 用户定制分析规则
-5. 更多浏览器模拟功能（如截图、PDF导出等）
+### 添加新的存储目标
 
-## 贡献指南
+1. 在 `app/storage/` 目录下创建新的存储适配器
+2. 在 `config/config.yaml` 中添加相应的配置项
+3. 在 `app/core/prefect_pipeline.py` 中注册新的存储适配器
 
-欢迎贡献代码、报告问题或提出新功能建议。请遵循以下步骤：
+## 飞书多维表格存储
 
-1. Fork仓库
-2. 创建功能分支：`git checkout -b new-feature`
-3. 提交更改：`git commit -am 'Add new feature'`
-4. 推送到分支：`git push origin new-feature`
-5. 创建Pull Request
+X-Cat 支持将数据存储到飞书多维表格，便于数据管理和查询。要启用此功能，请按照以下步骤配置：
+
+1. 在飞书开放平台创建多维表格，并获取 `app_token` 和 `table_id`
+2. 在 `.env` 文件中添加以下环境变量：
+   ```
+   FEISHU_BITABLE_APP_TOKEN=your_feishu_bitable_app_token_here
+   FEISHU_BITABLE_TABLE_ID=your_feishu_bitable_table_id_here
+   ```
+3. 确保 `config/config.yaml` 文件中的飞书配置包含多维表格配置：
+   ```yaml
+   feishu:
+     enabled: true
+     app_id: "${FEISHU_APP_ID}"
+     app_secret: "${FEISHU_APP_SECRET}"
+     bitable:
+       enabled: true
+       app_token: "${FEISHU_BITABLE_APP_TOKEN}"
+       table_id: "${FEISHU_BITABLE_TABLE_ID}"
+   ```
+
+多维表格中的字段包括：
+- 原始内容：提取的原始内容
+- 数据类型：内容类型（文本、图片等）
+- 来源：数据来源（Telegram、微信等）
+- 时间戳：数据提取时间
+- ID：数据唯一标识符
 
 ## 许可证
 
-[MIT License](LICENSE)
+MIT
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！

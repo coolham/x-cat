@@ -4,8 +4,9 @@
 """
 from typing import Dict, Any, List, Optional, Union
 import traceback
-
+from prefect import task
 from loguru import logger
+import json
 
 
 class ContentAssembler:
@@ -37,6 +38,7 @@ class ContentAssembler:
         self.max_content_length = max_content_length
         self.max_total_length = max_total_length
         self.format_type = format_type
+        logger.info(f"内容组装器初始化完成，配置: max_content_length={max_content_length}, max_total_length={max_total_length}, format_type={format_type}")
     
     def assemble(
         self,
@@ -252,4 +254,193 @@ class ContentAssembler:
             "has_media": bool(message.get("media_url"))
         }
         
-        return metadata 
+        return metadata
+
+    def assemble_structured_content(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        组装结构化内容
+        
+        Args:
+            data: 提取后的数据
+            
+        Returns:
+            组装后的数据
+        """
+        logger.info(f"开始组装内容: {data}")
+        
+        # 复制原始数据
+        assembled_data = data.copy()
+        
+        # 获取内容
+        content = assembled_data.get("content", "")
+        if not content:
+            logger.warning("数据中没有内容字段")
+            return assembled_data
+        
+        # 获取关键词
+        keywords = assembled_data.get("keywords", [])
+        
+        # 获取实体
+        entities = assembled_data.get("entities", {})
+        
+        # 获取摘要
+        summary = assembled_data.get("summary", "")
+        
+        # 组装结构化内容
+        structured_content = self._create_structured_content(
+            content=content,
+            keywords=keywords,
+            entities=entities,
+            summary=summary
+        )
+        
+        # 更新组装后的内容
+        assembled_data["structured_content"] = structured_content
+        
+        # 添加组装标记
+        assembled_data["assembled"] = True
+        assembled_data["assembly_info"] = {
+            "max_content_length": self.max_content_length,
+            "max_total_length": self.max_total_length,
+            "format_type": self.format_type
+        }
+        
+        logger.info(f"内容组装完成: {assembled_data}")
+        return assembled_data
+    
+    def _create_structured_content(
+        self, 
+        content: str, 
+        keywords: List[str], 
+        entities: Dict[str, List[str]], 
+        summary: str
+    ) -> Dict[str, Any]:
+        """
+        创建结构化内容
+        
+        Args:
+            content: 原始内容
+            keywords: 关键词列表
+            entities: 实体字典
+            summary: 摘要
+            
+        Returns:
+            结构化内容
+        """
+        # 创建结构化内容
+        structured_content = {
+            "content": content,
+            "keywords": keywords,
+            "entities": entities,
+            "summary": summary,
+            "metadata": {
+                "content_length": len(content),
+                "keyword_count": len(keywords),
+                "entity_counts": {k: len(v) for k, v in entities.items()},
+                "has_summary": bool(summary)
+            }
+        }
+        
+        # 根据格式化类型格式化内容
+        if self.format_type == "markdown":
+            structured_content["formatted_content"] = self._format_as_markdown(
+                content=content,
+                keywords=keywords,
+                entities=entities,
+                summary=summary
+            )
+        elif self.format_type == "html":
+            structured_content["formatted_content"] = self._format_as_html(
+                content=content,
+                keywords=keywords,
+                entities=entities,
+                summary=summary
+            )
+        else:
+            structured_content["formatted_content"] = content
+        
+        return structured_content
+    
+    def _format_as_markdown(
+        self, 
+        content: str, 
+        keywords: List[str], 
+        entities: Dict[str, List[str]], 
+        summary: str
+    ) -> str:
+        """
+        将内容格式化为Markdown
+        
+        Args:
+            content: 原始内容
+            keywords: 关键词列表
+            entities: 实体字典
+            summary: 摘要
+            
+        Returns:
+            Markdown格式的内容
+        """
+        # 创建Markdown内容
+        markdown = []
+        
+        # 添加摘要
+        if summary:
+            markdown.append(f"## 摘要\n\n{summary}\n\n")
+        
+        # 添加关键词
+        if keywords:
+            markdown.append(f"## 关键词\n\n{', '.join(keywords)}\n\n")
+        
+        # 添加实体
+        if entities:
+            markdown.append("## 实体\n\n")
+            for entity_type, entity_list in entities.items():
+                if entity_list:
+                    markdown.append(f"### {entity_type}\n\n{', '.join(entity_list)}\n\n")
+        
+        # 添加原始内容
+        markdown.append(f"## 原始内容\n\n{content}\n\n")
+        
+        return "".join(markdown)
+    
+    def _format_as_html(
+        self, 
+        content: str, 
+        keywords: List[str], 
+        entities: Dict[str, List[str]], 
+        summary: str
+    ) -> str:
+        """
+        将内容格式化为HTML
+        
+        Args:
+            content: 原始内容
+            keywords: 关键词列表
+            entities: 实体字典
+            summary: 摘要
+            
+        Returns:
+            HTML格式的内容
+        """
+        # 创建HTML内容
+        html = []
+        
+        # 添加摘要
+        if summary:
+            html.append(f"<h2>摘要</h2><p>{summary}</p>")
+        
+        # 添加关键词
+        if keywords:
+            html.append(f"<h2>关键词</h2><p>{', '.join(keywords)}</p>")
+        
+        # 添加实体
+        if entities:
+            html.append("<h2>实体</h2>")
+            for entity_type, entity_list in entities.items():
+                if entity_list:
+                    html.append(f"<h3>{entity_type}</h3><p>{', '.join(entity_list)}</p>")
+        
+        # 添加原始内容
+        html.append(f"<h2>原始内容</h2><p>{content}</p>")
+        
+        return "".join(html) 

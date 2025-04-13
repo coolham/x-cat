@@ -103,6 +103,10 @@ class TelegramMessage:
             
         return result
     
+    def __str__(self) -> str:
+        """消息字符串表示"""
+        return f"TelegramMessage(message_id={self.message_id}, date={self.date}, chat={self.chat}, from_user={self.from_user}, text={self.text}, caption={self.caption}, media={self.media}, entities={self.entities})"
+    
     def get_content(self) -> str:
         """获取消息内容"""
         return self.text or self.caption or ''

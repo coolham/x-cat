@@ -1,0 +1,36 @@
+# Content Analyzer Module Configuration Example
+# Copy this file to content_analyzer.yaml and modify as needed
+
+# General settings
+provider: openai  # openai, openrouter, deepseek
+model: gpt-4
+max_tokens: 2000
+temperature: 0.7
+max_content_length: 8000
+max_total_length: 15000
+max_concurrency: 1
+cache_dir: data/analyzer_cache
+
+# Proxy settings (optional)
+proxy:
+  enabled: false
+  url: "http://127.0.0.1:10808"
+
+# Cache settings
+cache:
+  enabled: true
+  ttl: 86400  # 24 hours in seconds
+  max_size: 1000  # Maximum number of cached items
+
+# Analysis settings
+analysis:
+  summary_max_length: 100
+  extract_keywords: true
+  extract_entities: true
+  sentiment_analysis: true
+  language_detection: true
+
+# Rate limiting
+rate_limit:
+  requests_per_minute: 60
+  burst_size: 10 
